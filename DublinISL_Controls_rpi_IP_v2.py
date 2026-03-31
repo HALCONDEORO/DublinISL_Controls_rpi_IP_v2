@@ -114,7 +114,11 @@ Cam2Check = _check_camera(IPAddress2, Cam2ID)
 # Connectivity status — will be updated asynchronously after the window shows.
 Cam1Check = "Red"
 Cam2Check = "Red"
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -367,7 +371,11 @@ class MainWindow(QMainWindow):
         # ── Platform preset buttons (fixed positions above seating plan) ───────
         # These three call hardcoded presets on Camera 1 (platform camera only).
         Preset1 = GoButton('Chairman', self)
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
         Preset1.resize(110, 110)
         Preset1.move(623, 35)
         Preset1.setStyleSheet(
@@ -653,7 +661,11 @@ class MainWindow(QMainWindow):
         self._cam1_addr_btn.setGeometry(1500, 975, 310, 22)
         self._cam1_addr_btn.setStyleSheet("font: bold 15px; color:" + Cam1Check)
         self._cam1_addr_btn.clicked.connect(self.PTZ1Address)
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
         self._cam2_addr_btn = QPushButton('Comments [Audience]  -  ' + IPAddress2, self)
         self._cam2_addr_btn.setGeometry(1500, 995, 310, 22)
@@ -740,7 +752,11 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────────
     #  UI Helpers
     # ─────────────────────────────────────────────────────────────────────────
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
     def _arrow_btn(self, x, y, degrees):
         """Create a 100x100 transparent push-button with a rotated arrow icon."""
@@ -819,7 +835,11 @@ class MainWindow(QMainWindow):
                             f'"{IPAddress2}" and ID 2.')
 
     # ─────────────────────────────────────────────────────────────────────────
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
     #  SESSION MANAGEMENT
     # -------------------------------------------------------------------------
 
@@ -860,7 +880,11 @@ class MainWindow(QMainWindow):
                 self.ErrorCapture2()
 
             # After 8 seconds both cameras should be ready to accept commands
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
             QtCore.QTimer.singleShot(8000, self._session_home)
 
         else:
@@ -881,7 +905,11 @@ class MainWindow(QMainWindow):
                     self.ErrorCapture1()
                 if not ok2:
                     self.ErrorCapture2()
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
                 self.session_active = False
                 self.BtnSession.setStyleSheet(
                     "QPushButton{background-color: #8b1a1a; border: 2px solid #5a0d0d; "
@@ -908,7 +936,11 @@ class MainWindow(QMainWindow):
         if not ok2:
             self.ErrorCapture2()
         # Update button to green / ON state
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
         self.BtnSession.setStyleSheet(
             "QPushButton{background-color: #1a7a1a; border: 2px solid #0d4d0d; "
             "font: bold 26px; color: white; border-radius: 25px}"
@@ -984,7 +1016,11 @@ class MainWindow(QMainWindow):
             else:
                 self.ErrorCapture()
                 return
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
         self._update_backlight_ui()
 
     # -------------------------------------------------------------------------
@@ -1059,7 +1095,11 @@ class MainWindow(QMainWindow):
         ip, cam_id = self._active_cam()
         suffix = "01060104040202ff" if self._is_slow() else "01060110100202ff"
         self._send_cmd_async(ip, cam_id, suffix)
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
     def Stop(self):
         """Stop all pan/tilt movement.  VISCA: <id> 01 06 01 00 00 03 03 FF"""
@@ -1077,7 +1117,11 @@ class MainWindow(QMainWindow):
 =======
         suffix = "01040722ff" if self._is_slow() else "01040726ff"
         self._send_cmd_async(ip, cam_id, suffix)
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
     def ZoomOut(self):
         """Start zooming out (wide) at a speed proportional to the slider."""
@@ -1088,7 +1132,11 @@ class MainWindow(QMainWindow):
 =======
         suffix = "01040732ff" if self._is_slow() else "01040736ff"
         self._send_cmd_async(ip, cam_id, suffix)
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
     def ZoomStop(self):
         """Stop zoom movement.  VISCA: <id> 01 04 07 00 FF"""
@@ -1097,7 +1145,11 @@ class MainWindow(QMainWindow):
         self._send_cmd(ip, cam_id, "01040700FF")
 =======
         self._send_cmd_async(ip, cam_id, "01040700ff")
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
     # -------------------------------------------------------------------------
     #  PRESET HANDLER — All seat buttons (presets 1-129)
@@ -1172,7 +1224,11 @@ class MainWindow(QMainWindow):
 <<<<<<< HEAD
 =======
                 # Restart the app to reload all config and re-check connectivity
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
                 os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _change_cam_id(self, cam_num):
@@ -1226,7 +1282,11 @@ class MainWindow(QMainWindow):
                 self, 'Platform PTZ Control',
                 f'New VISCA ID for Platform Camera  (current: {Cam1ID}):',
                 text=Cam1ID
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
             )
             if ok and text:
                 if not _is_valid_cam_id(text):
@@ -1267,7 +1327,11 @@ class MainWindow(QMainWindow):
                 with open("Cam2ID.txt", "w") as f:
                     f.write(text.strip())
                 os.execv(sys.executable, [sys.executable] + sys.argv)
+<<<<<<< HEAD
 >>>>>>> d6b7c47df58f5e9c6795f19ed6079555c6f5b624
+=======
+>>>>>>> claude/xenodochial-lalande
+>>>>>>> carol
 
     def Quit(self):
         """Close the application cleanly."""
