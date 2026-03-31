@@ -32,6 +32,7 @@ import re
 import sys
 import socket
 import binascii
+import threading
 
 import PyQt5
 from PyQt5 import QtGui, QtWidgets, QtCore
@@ -97,9 +98,9 @@ def _check_camera(ip, cam_id):
         return "Red"
 
 
-# Run connectivity checks at startup; results colour the address labels
-Cam1Check = _check_camera(IPAddress,  Cam1ID)
-Cam2Check = _check_camera(IPAddress2, Cam2ID)
+# Connectivity status — will be updated asynchronously after the window shows.
+Cam1Check = "Red"
+Cam2Check = "Red"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  VISCA preset number → hex byte mapping
@@ -236,7 +237,7 @@ class MainWindow(QMainWindow):
 
         # ── Platform preset buttons (fixed positions above seating plan) ───────
         # These three call hardcoded presets on Camera 1 (platform camera only).
-        Preset1 = QPushButton('Chairman', self)
+        Preset1 = GoButton('Chairman', self)
         Preset1.resize(110, 110)
         Preset1.move(623, 35)
         Preset1.setStyleSheet(
@@ -507,25 +508,25 @@ class MainWindow(QMainWindow):
         # ── Config / status buttons (bottom of right panel) ───────────────────
         # Clicking these labels opens a dialog to change the IP or camera ID.
         # Colour reflects whether the camera was reachable at startup.
-        Cam1Address = QPushButton('Platform [Platform]  -  ' + IPAddress, self)
-        Cam1Address.setGeometry(1500, 975, 310, 22)
-        Cam1Address.setStyleSheet("font: bold 15px; color:" + Cam1Check)
-        Cam1Address.clicked.connect(self.PTZ1Address)
+        self._cam1_addr_btn = QPushButton('Platform [Platform]  -  ' + IPAddress, self)
+        self._cam1_addr_btn.setGeometry(1500, 975, 310, 22)
+        self._cam1_addr_btn.setStyleSheet("font: bold 15px; color:" + Cam1Check)
+        self._cam1_addr_btn.clicked.connect(self.PTZ1Address)
 
-        Cam2Address = QPushButton('Comments [Audience]  -  ' + IPAddress2, self)
-        Cam2Address.setGeometry(1500, 995, 310, 22)
-        Cam2Address.setStyleSheet("font: bold 15px; color:" + Cam2Check)
-        Cam2Address.clicked.connect(self.PTZ2Address)
+        self._cam2_addr_btn = QPushButton('Comments [Audience]  -  ' + IPAddress2, self)
+        self._cam2_addr_btn.setGeometry(1500, 995, 310, 22)
+        self._cam2_addr_btn.setStyleSheet("font: bold 15px; color:" + Cam2Check)
+        self._cam2_addr_btn.clicked.connect(self.PTZ2Address)
 
-        PTZ1ID = QPushButton(' ID-' + Cam1ID, self)
-        PTZ1ID.setGeometry(1815, 975, 45, 22)
-        PTZ1ID.setStyleSheet("font: bold 15px; color:" + Cam1Check)
-        PTZ1ID.clicked.connect(self.PTZ1IDchange)
+        self._ptz1_id_btn = QPushButton(' ID-' + Cam1ID, self)
+        self._ptz1_id_btn.setGeometry(1815, 975, 45, 22)
+        self._ptz1_id_btn.setStyleSheet("font: bold 15px; color:" + Cam1Check)
+        self._ptz1_id_btn.clicked.connect(self.PTZ1IDchange)
 
-        PTZ2ID = QPushButton(' ID-' + Cam2ID, self)
-        PTZ2ID.setGeometry(1815, 995, 45, 22)
-        PTZ2ID.setStyleSheet("font: bold 15px; color:" + Cam2Check)
-        PTZ2ID.clicked.connect(self.PTZ2IDchange)
+        self._ptz2_id_btn = QPushButton(' ID-' + Cam2ID, self)
+        self._ptz2_id_btn.setGeometry(1815, 995, 45, 22)
+        self._ptz2_id_btn.setStyleSheet("font: bold 15px; color:" + Cam2Check)
+        self._ptz2_id_btn.clicked.connect(self.PTZ2IDchange)
 
         # Close application
         Version = QPushButton('Close window', self)
@@ -542,6 +543,20 @@ class MainWindow(QMainWindow):
             "background-color: lightgrey; font: 15px; color: black; border: none"
         )
         Help.clicked.connect(self.HelpMsg)
+
+        # ── Deferred connectivity check ──────────────────────────────────────
+        # Run after the window is visible so the UI is not blocked at startup.
+        QtCore.QTimer.singleShot(0, self._deferred_connectivity_check)
+
+    def _deferred_connectivity_check(self):
+        """Check camera connectivity and update the address-label colours."""
+        global Cam1Check, Cam2Check
+        Cam1Check = _check_camera(IPAddress, Cam1ID)
+        Cam2Check = _check_camera(IPAddress2, Cam2ID)
+        self._cam1_addr_btn.setStyleSheet("font: bold 15px; color:" + Cam1Check)
+        self._cam2_addr_btn.setStyleSheet("font: bold 15px; color:" + Cam2Check)
+        self._ptz1_id_btn.setStyleSheet("font: bold 15px; color:" + Cam1Check)
+        self._ptz2_id_btn.setStyleSheet("font: bold 15px; color:" + Cam2Check)
 
     # ─────────────────────────────────────────────────────────────────────────
     #  UI Helpers
@@ -606,6 +621,15 @@ class MainWindow(QMainWindow):
         except (socket.timeout, socket.error, OSError):
             return False
 
+    def _send_cmd_async(self, ip, cam_id_hex, cmd_suffix):
+        """Fire-and-forget variant of _send_cmd that runs in a background thread.
+        Used for PTZ movement/zoom commands where blocking the UI is unacceptable
+        and error feedback is not critical."""
+        threading.Thread(
+            target=self._send_cmd, args=(ip, cam_id_hex, cmd_suffix),
+            daemon=True
+        ).start()
+
     def _active_cam(self):
         """
         Return (ip, cam_id) for whichever camera is currently selected
@@ -639,31 +663,6 @@ class MainWindow(QMainWindow):
                             f'Check that the Comments Camera IP Address is set to '
                             f'"{IPAddress2}" and ID 2.')
 
-    # Individual camera send helpers — used by legacy call paths that need
-    # camera-specific error dialogs rather than the generic one.
-    def Cam1Call(self):
-        if not self._send_cmd(IPAddress, Cam1ID, "01060100000303FF"):
-            self.ErrorCapture1()
-
-    def Cam1aCall(self):
-        if not self._send_cmd(IPAddress, Cam1ID, "01060100000303FF"):
-            self.ErrorCapture1()
-
-    def Cam2Call(self):
-        if not self._send_cmd(IPAddress2, Cam2ID, "01060100000303FF"):
-            self.ErrorCapture2()
-
-    def Cam2aCall(self):
-        if not self._send_cmd(IPAddress2, Cam2ID, "01060100000303FF"):
-            self.ErrorCapture2()
-
-    def Cam1Stop(self):
-        # VISCA stop: <id>01060100000303FF
-        self._send_cmd(IPAddress, Cam1ID, "01060100000303FF")
-
-    def Cam2Stop(self):
-        self._send_cmd(IPAddress2, Cam2ID, "01060100000303FF")
-
     # ─────────────────────────────────────────────────────────────────────────
     #  SESSION MANAGEMENT
     # ─────────────────────────────────────────────────────────────────────────
@@ -689,8 +688,12 @@ class MainWindow(QMainWindow):
             self.SessionStatus.setStyleSheet("font: bold 12px; color: #888")
 
             # VISCA power ON: <id>01040002FF
-            self._send_cmd(IPAddress,  Cam1ID, "01040002FF")
-            self._send_cmd(IPAddress2, Cam2ID, "01040002FF")
+            ok1 = self._send_cmd(IPAddress,  Cam1ID, "01040002FF")
+            ok2 = self._send_cmd(IPAddress2, Cam2ID, "01040002FF")
+            if not ok1:
+                self.ErrorCapture1()
+            if not ok2:
+                self.ErrorCapture2()
 
             # After 8 seconds both cameras should be ready to accept commands
             QtCore.QTimer.singleShot(8000, self._session_home)
@@ -704,8 +707,12 @@ class MainWindow(QMainWindow):
             )
             if reply == QMessageBox.Yes:
                 # VISCA standby: <id>01040003FF
-                self._send_cmd(IPAddress,  Cam1ID, "01040003FF")
-                self._send_cmd(IPAddress2, Cam2ID, "01040003FF")
+                ok1 = self._send_cmd(IPAddress,  Cam1ID, "01040003FF")
+                ok2 = self._send_cmd(IPAddress2, Cam2ID, "01040003FF")
+                if not ok1:
+                    self.ErrorCapture1()
+                if not ok2:
+                    self.ErrorCapture2()
                 self.session_active = False
                 # Reset button to red / OFF state
                 self.BtnSession.setStyleSheet(
@@ -724,8 +731,12 @@ class MainWindow(QMainWindow):
         Sends both cameras to their Home position and marks the session as fully ON.
         VISCA Home: <id>010604FF
         """
-        self._send_cmd(IPAddress,  Cam1ID, "010604FF")
-        self._send_cmd(IPAddress2, Cam2ID, "010604FF")
+        ok1 = self._send_cmd(IPAddress,  Cam1ID, "010604FF")
+        ok2 = self._send_cmd(IPAddress2, Cam2ID, "010604FF")
+        if not ok1:
+            self.ErrorCapture1()
+        if not ok2:
+            self.ErrorCapture2()
         # Update button to green / ON state
         self.BtnSession.setStyleSheet(
             "QPushButton{background-color: #1a7a1a; border: 2px solid #0d4d0d; "
@@ -745,17 +756,20 @@ class MainWindow(QMainWindow):
     def AutoFocus(self):
         """Enable continuous autofocus"""
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01043802FF")
+        if not self._send_cmd(ip, cam_id, "01043802FF"):
+            self.ErrorCapture()
 
     def ManualFocus(self):
         """Switch to manual focus mode"""
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01043803FF")
+        if not self._send_cmd(ip, cam_id, "01043803FF"):
+            self.ErrorCapture()
 
     def OnePushAF(self):
         """Trigger one autofocus cycle, then return to manual"""
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01041801FF")
+        if not self._send_cmd(ip, cam_id, "01041801FF"):
+            self.ErrorCapture()
 
     # ─────────────────────────────────────────────────────────────────────────
     #  EXPOSURE CONTROLS
@@ -764,12 +778,14 @@ class MainWindow(QMainWindow):
     def BrightnessUp(self):
         """Increase exposure compensation by one step. VISCA: <id>01040D02FF"""
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01040D02FF")
+        if not self._send_cmd(ip, cam_id, "01040D02FF"):
+            self.ErrorCapture()
 
     def BrightnessDown(self):
         """Decrease exposure compensation by one step. VISCA: <id>01040D03FF"""
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01040D03FF")
+        if not self._send_cmd(ip, cam_id, "01040D03FF"):
+            self.ErrorCapture()
 
     def BacklightToggle(self):
         """
@@ -781,11 +797,17 @@ class MainWindow(QMainWindow):
         ip, cam_id = self._active_cam()
         cam_key = 1 if self.Cam1.isChecked() else 2
         if self.backlight_on[cam_key]:
-            self._send_cmd(ip, cam_id, "01043303FF")   # Turn backlight OFF
-            self.backlight_on[cam_key] = False
+            if self._send_cmd(ip, cam_id, "01043303FF"):   # Turn backlight OFF
+                self.backlight_on[cam_key] = False
+            else:
+                self.ErrorCapture()
+                return
         else:
-            self._send_cmd(ip, cam_id, "01043302FF")   # Turn backlight ON
-            self.backlight_on[cam_key] = True
+            if self._send_cmd(ip, cam_id, "01043302FF"):   # Turn backlight ON
+                self.backlight_on[cam_key] = True
+            else:
+                self.ErrorCapture()
+                return
         self._update_backlight_ui()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -799,65 +821,65 @@ class MainWindow(QMainWindow):
 
     def HomeButton(self):
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "010604FF")
+        self._send_cmd_async(ip, cam_id, "010604FF")
 
     def UpLeft(self):
         ip, cam_id = self._active_cam()
         suffix = "01060104040101ff" if self._is_slow() else "01060110100101ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def Up(self):
         ip, cam_id = self._active_cam()
         suffix = "01060100040301FF" if self._is_slow() else "01060100100301FF"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def UpRight(self):
         ip, cam_id = self._active_cam()
         suffix = "01060104040201ff" if self._is_slow() else "01060110100201ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def Left(self):
         ip, cam_id = self._active_cam()
         suffix = "01060104000103ff" if self._is_slow() else "01060110000103ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def Right(self):
         ip, cam_id = self._active_cam()
         suffix = "01060104000203ff" if self._is_slow() else "01060110000203ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def DownLeft(self):
         ip, cam_id = self._active_cam()
         suffix = "01060104040102ff" if self._is_slow() else "01060110100102ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def Down(self):
         ip, cam_id = self._active_cam()
         suffix = "01060100040302ff" if self._is_slow() else "01060100100302ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def DownRight(self):
         ip, cam_id = self._active_cam()
         suffix = "01060104040202ff" if self._is_slow() else "01060110100202ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def Stop(self):
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01060100000303FF")
+        self._send_cmd_async(ip, cam_id, "01060100000303FF")
 
     def ZoomIn(self):
         ip, cam_id = self._active_cam()
         suffix = "01040722ff" if self._is_slow() else "01040726ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def ZoomOut(self):
         ip, cam_id = self._active_cam()
         suffix = "01040732ff" if self._is_slow() else "01040736ff"
-        self._send_cmd(ip, cam_id, suffix)
+        self._send_cmd_async(ip, cam_id, suffix)
 
     def ZoomStop(self):
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01040700ff")
+        self._send_cmd_async(ip, cam_id, "01040700ff")
 
     # ─────────────────────────────────────────────────────────────────────────
     #  PRESET HANDLERS — Platform positions (Camera 1 only, presets 1-3)
@@ -962,7 +984,7 @@ class MainWindow(QMainWindow):
                 with open("PTZ1IP.txt", "w") as f:
                     f.write(text.strip())
                 # Restart the app to reload all config and re-check connectivity
-                os.execv(sys.executable, ['python3'] + sys.argv)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def PTZ2Address(self):
         """Let the operator change Camera 2's IP address."""
@@ -986,7 +1008,7 @@ class MainWindow(QMainWindow):
                     return
                 with open("PTZ2IP.txt", "w") as f:
                     f.write(text.strip())
-                os.execv(sys.executable, ['python3'] + sys.argv)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def PTZ1IDchange(self):
         """ Let the operator change Camera 1's VISCA device ID.
@@ -1012,7 +1034,7 @@ class MainWindow(QMainWindow):
                     return
                 with open("Cam1ID.txt", "w") as f:
                     f.write(text.strip())
-                os.execv(sys.executable, ['python3'] + sys.argv)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def PTZ2IDchange(self):
     
@@ -1037,7 +1059,7 @@ class MainWindow(QMainWindow):
                     return
                 with open("Cam2ID.txt", "w") as f:
                     f.write(text.strip())
-                os.execv(sys.executable, ['python3'] + sys.argv)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def Quit(self):
         """Close the application cleanly."""
