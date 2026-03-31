@@ -134,7 +134,7 @@ for _i in range(4, 90):
     PRESET_MAP[_i] = f"{_i:02X}"
 for _i in range(90, 100):
     PRESET_MAP[_i] = f"{0x8C + (_i - 90):02X}"
-for _i in range(100, 129):
+for _i in range(100, 130):
     PRESET_MAP[_i] = f"{_i:02X}"
 
 
@@ -250,6 +250,8 @@ class MainWindow(QMainWindow):
            124:(108,975),125:(201,975),126:(481,975),127:(578,975),
             # Wheelchair space
            128:(150,110),
+           # Second Room
+           129:(445,975),
         }
 
         # ── Platform preset buttons (Chairman, Left, Right) ───────────────────
@@ -282,7 +284,7 @@ class MainWindow(QMainWindow):
         Preset3.clicked.connect(self.Go3)
 
         # ── Seat buttons (one per entry in seat_positions) ────────────────────
-        for seat_number in range(4, 129):
+        for seat_number in range(4, 130):
             if seat_number not in seat_positions:
                 continue
             x, y = seat_positions[seat_number]
@@ -355,7 +357,6 @@ class MainWindow(QMainWindow):
 
         # ── RIGHT PANEL — PTZ Speed Slider ────────────────────────────────────
         #
-        #  Replaces the old SLOW / FAST two-button toggle.
         #
         #  The slider exposes a continuous integer range [SPEED_MIN, SPEED_MAX]
         #  (default 1-18).  Moving the handle to the left slows all camera
@@ -1008,7 +1009,7 @@ class MainWindow(QMainWindow):
                 self._send_cmd(IPAddress, Cam1ID, "01043f0103ff")
 
     # -------------------------------------------------------------------------
-    #  PRESET HANDLER — Seat buttons (presets 4-128, active camera)
+    #  PRESET HANDLER — Seat buttons (presets 4-129, active camera)
     # -------------------------------------------------------------------------
 
     def go_to_preset(self, preset_number):
