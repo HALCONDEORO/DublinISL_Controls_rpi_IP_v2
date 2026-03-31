@@ -528,6 +528,12 @@ class MainWindow(QMainWindow):
         self._ptz2_id_btn.setStyleSheet("font: bold 15px; color:" + Cam2Check)
         self._ptz2_id_btn.clicked.connect(self.PTZ2IDchange)
 
+        # Version label
+        VersionLabel = QLabel('v2 — IP RPI — March 2026', self)
+        VersionLabel.setGeometry(1500, 1022, 360, 20)
+        VersionLabel.setAlignment(QtCore.Qt.AlignCenter)
+        VersionLabel.setStyleSheet("font: 12px; color: grey")
+
         # Close application
         Version = QPushButton('Close window', self)
         Version.setGeometry(1500, 1050, 310, 22)
