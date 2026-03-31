@@ -34,6 +34,7 @@ import re
 import sys
 import socket
 import binascii
+import threading
 
 import PyQt5
 from PyQt5 import QtGui, QtWidgets, QtCore
@@ -130,6 +131,8 @@ Cam2Check = _check_camera(IPAddress2, Cam2ID)
 #  are remapped to 0x8C-0x95.  All others use direct two-digit hex conversion.
 # ─────────────────────────────────────────────────────────────────────────────
 PRESET_MAP = {}
+for _i in range(1, 4):       # Platform presets: Chairman(1), Left(2), Right(3)
+    PRESET_MAP[_i] = f"{_i:02X}"
 for _i in range(4, 90):
     PRESET_MAP[_i] = f"{_i:02X}"
 for _i in range(90, 100):
@@ -254,8 +257,8 @@ class MainWindow(QMainWindow):
            129:(445,975),
         }
 
-        # ── Platform preset buttons (Chairman, Left, Right) ───────────────────
-        # These three call hardcoded presets on Camera 1 only (platform camera).
+        # ── Platform preset buttons (Chairman, Left, Right) ─────────────────────
+        # These use the original working style and connect to go_to_preset.
         Preset1 = QPushButton('Chairman', self)
         Preset1.resize(110, 110)
         Preset1.move(623, 35)
@@ -263,33 +266,55 @@ class MainWindow(QMainWindow):
             "background-color: rgba(0,0,0,0); font: 14px; font-weight: bold; "
             "color: black; padding-top: 70px"
         )
-        Preset1.clicked.connect(self.Go1)
+        Preset1.clicked.connect(lambda: self.go_to_preset(1))
 
-        Preset2 = GoButton('Left', self)
+        Preset2 = QPushButton('Left', self)
         Preset2.resize(110, 110)
         Preset2.move(460, 35)
         Preset2.setStyleSheet(
             "background-color: rgba(0,0,0,0); font: 14px; font-weight: bold; "
             "color: black; padding-top: 70px"
         )
-        Preset2.clicked.connect(self.Go2)
+        Preset2.clicked.connect(lambda: self.go_to_preset(2))
 
-        Preset3 = GoButton('Right', self)
+        Preset3 = QPushButton('Right', self)
         Preset3.resize(110, 110)
         Preset3.move(803, 35)
         Preset3.setStyleSheet(
             "background-color: rgba(0,0,0,0); font: 14px; font-weight: bold; "
             "color: black; padding-top: 70px"
         )
-        Preset3.clicked.connect(self.Go3)
+        Preset3.clicked.connect(lambda: self.go_to_preset(3))
 
         # ── Seat buttons (one per entry in seat_positions) ────────────────────
+        # Presets 1-3 (Chairman, Left, Right) are included here;
+        # go_to_preset() always routes them to Camera 1.
         for seat_number in range(4, 130):
             if seat_number not in seat_positions:
                 continue
             x, y = seat_positions[seat_number]
             button = GoButton(str(seat_number), self)
             button.move(x, y)
+
+            # Seat 129 (Second Room): QToolButton so icon sits above text natively
+            if seat_number == 129:
+                from PyQt5.QtWidgets import QToolButton
+                button.hide()          # hide the GoButton placeholder
+                button = QToolButton(self)
+                button.move(x, y)
+                button.resize(55, 65)
+                button.setText('Second Room')
+                button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+                button.setStyleSheet(
+                    "QToolButton { background-color: rgba(0,0,0,10); border: 0px solid black; "
+                    "border-radius: 5px; font: 8px; font-weight: bold; color: " + ButtonColor + "; }"
+                )
+                pix = QPixmap("second_room.png").scaled(
+                    40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                button.setIcon(QtGui.QIcon(pix))
+                button.setIconSize(QtCore.QSize(40, 40))
+
             # Default-argument trick captures the loop variable correctly
             button.clicked.connect(
                 lambda checked=False, n=seat_number: self.go_to_preset(n)
@@ -683,21 +708,21 @@ class MainWindow(QMainWindow):
 
     def _send_cmd(self, ip, cam_id_hex, cmd_suffix):
         """
-        Open a TCP connection to a camera, send one VISCA command, read the
-        acknowledgement, and close the socket.
+        Fire-and-forget: launches the network call in a daemon thread so the
+        UI never blocks waiting for the camera to respond.
+        """
+        threading.Thread(
+            target=self._send_cmd_blocking,
+            args=(ip, cam_id_hex, cmd_suffix),
+            daemon=True
+        ).start()
 
-        Args:
-            ip          : Camera IP address (e.g. "172.16.1.11")
-            cam_id_hex  : VISCA device ID as a hex string (e.g. "81")
-            cmd_suffix  : Hex string for the command body that follows the ID
-                          (e.g. "01040722ff" for Zoom Tele at speed 2)
-
-        Returns:
-            True on success, False on any network / OS error.
-
-        Note:
-            The socket is always closed via the `with` context manager, even if
-            an exception occurs, preventing file-descriptor leaks.
+    def _send_cmd_blocking(self, ip, cam_id_hex, cmd_suffix):
+        """
+        Blocking network call — runs in a background thread.
+        Opens a TCP connection, sends the VISCA command, reads the ACK,
+        and closes the socket. Errors are silently ignored so a lost
+        packet never crashes the UI.
         """
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -705,9 +730,8 @@ class MainWindow(QMainWindow):
                 s.connect((ip, 5678))
                 s.send(binascii.unhexlify(cam_id_hex + cmd_suffix))
                 s.recv(131072)   # Read and discard the VISCA ACK / completion reply
-            return True
         except (socket.timeout, socket.error, OSError):
-            return False
+            pass
 
     def _active_cam(self):
         """Return (ip, cam_id) for whichever camera is currently selected."""
@@ -879,60 +903,37 @@ class MainWindow(QMainWindow):
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "010604FF")
 
-    def Up(self):
-        """Tilt up.  pan_spd=00, tilt_spd=slider, pan_dir=stop(03), tilt_dir=up(01)"""
-        ip, cam_id = self._active_cam()
-        spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"01060100{spd:02X}0301FF")
+    def _move(self, pan_dir, tilt_dir):
+        """
+        Send a VISCA Pan-Tilt Drive command for any direction.
 
-    def Down(self):
-        """Tilt down.  pan_spd=00, tilt_spd=slider, pan_dir=stop(03), tilt_dir=down(02)"""
-        ip, cam_id = self._active_cam()
-        spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"01060100{spd:02X}0302FF")
+        pan_dir / tilt_dir nibbles:
+            01 = left/up   02 = right/down   03 = stop
 
-    def Left(self):
-        """Pan left.  pan_spd=slider, tilt_spd=00, pan_dir=left(01), tilt_dir=stop(03)"""
+        Single-axis moves pass speed only on the active axis;
+        the stopped axis always gets 0x00.
+        Diagonal moves use full speed on both axes.
+        """
         ip, cam_id = self._active_cam()
         spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"010601{spd:02X}000103FF")
+        pan_spd  = 0  if pan_dir  == 0x03 else spd
+        tilt_spd = 0  if tilt_dir == 0x03 else spd
+        self._send_cmd(ip, cam_id,
+            f"010601{pan_spd:02X}{tilt_spd:02X}{pan_dir:02X}{tilt_dir:02X}FF")
 
-    def Right(self):
-        """Pan right.  pan_spd=slider, tilt_spd=00, pan_dir=right(02), tilt_dir=stop(03)"""
-        ip, cam_id = self._active_cam()
-        spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"010601{spd:02X}000203FF")
-
-    def UpLeft(self):
-        """Diagonal up-left.  Both axes move simultaneously at the current speed."""
-        ip, cam_id = self._active_cam()
-        spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0101FF")
-
-    def UpRight(self):
-        """Diagonal up-right.  Both axes at current speed."""
-        ip, cam_id = self._active_cam()
-        spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0201FF")
-
-    def DownLeft(self):
-        """Diagonal down-left.  Both axes at current speed."""
-        ip, cam_id = self._active_cam()
-        spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0102FF")
-
-    def DownRight(self):
-        """Diagonal down-right.  Both axes at current speed."""
-        ip, cam_id = self._active_cam()
-        spd = self._get_speed()
-        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0202FF")
+    # Direction wrappers — connected to arrow button pressed/released signals
+    def Up(self):        self._move(0x03, 0x01)
+    def Down(self):      self._move(0x03, 0x02)
+    def Left(self):      self._move(0x01, 0x03)
+    def Right(self):     self._move(0x02, 0x03)
+    def UpLeft(self):    self._move(0x01, 0x01)
+    def UpRight(self):   self._move(0x02, 0x01)
+    def DownLeft(self):  self._move(0x01, 0x02)
+    def DownRight(self): self._move(0x02, 0x02)
 
     def Stop(self):
-        """
-        Stop all pan/tilt movement (sent on button release).
-        Speed bytes are 0x00; direction bytes are stop (0x03) for both axes.
-        VISCA: <id> 01 06 01 00 00 03 03 FF
-        """
+        """Stop all pan/tilt movement (sent on button release).
+        VISCA: <id> 01 06 01 00 00 03 03 FF"""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01060100000303FF")
 
@@ -969,72 +970,38 @@ class MainWindow(QMainWindow):
         self._send_cmd(ip, cam_id, "01040700FF")
 
     # -------------------------------------------------------------------------
-    #  PRESET HANDLERS — Platform positions (Camera 1 only, presets 1-3)
-    #
-    #  Go1/Go2/Go3 always target Camera 1 regardless of the Camera Selection
-    #  panel, because Chairman / Left / Right are physical platform positions
-    #  that are only meaningful for the platform-facing camera.
-    # -------------------------------------------------------------------------
-
-    def Go1(self):
-        """Chairman preset — Camera 1 preset slot #1.  Call or Set by mode."""
-        if self.Set1.isChecked():
-            # VISCA Recall preset 1: <id> 01 04 3F 02 01 FF
-            self._send_cmd(IPAddress, Cam1ID, "01043f0201ff")
-        elif self.Set2.isChecked():
-            reply = QMessageBox.question(self, 'Record Chairman Position', "Are You Sure?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                # VISCA Set preset 1: <id> 01 04 3F 01 01 FF
-                self._send_cmd(IPAddress, Cam1ID, "01043f0101ff")
-
-    def Go2(self):
-        """Platform Left preset — Camera 1 preset slot #2."""
-        if self.Set1.isChecked():
-            self._send_cmd(IPAddress, Cam1ID, "01043f0202ff")
-        elif self.Set2.isChecked():
-            reply = QMessageBox.question(self, 'Record Platform Left', "Are You Sure?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self._send_cmd(IPAddress, Cam1ID, "01043f0102ff")
-
-    def Go3(self):
-        """Platform Right preset — Camera 1 preset slot #3."""
-        if self.Set1.isChecked():
-            self._send_cmd(IPAddress, Cam1ID, "01043f0203ff")
-        elif self.Set2.isChecked():
-            reply = QMessageBox.question(self, 'Record Platform Right', "Are You Sure?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self._send_cmd(IPAddress, Cam1ID, "01043f0103ff")
-
-    # -------------------------------------------------------------------------
-    #  PRESET HANDLER — Seat buttons (presets 4-129, active camera)
+    #  PRESET HANDLER — All seat buttons (presets 1-129)
+#
+#  Presets 1-3 (Chairman, Left, Right) always target Camera 1.
+#  Presets 4-129 target whichever camera is currently selected.
     # -------------------------------------------------------------------------
 
     def go_to_preset(self, preset_number):
         """
-        Call or set a seat preset on the currently active camera.
+        Call or set a preset on the active camera.
+        Presets 1-3 always use Camera 1 (platform positions).
+        All others use the camera selected in the Camera Selection panel.
 
         Call mode (Set1 checked):
-            Moves the camera to the position stored in that preset slot.
             VISCA Recall: <id> 01 04 3F 02 <preset_hex> FF
-
         Set mode (Set2 checked):
-            Overwrites the preset slot with the camera's current position.
-            A confirmation dialog prevents accidental overwrites.
             VISCA Set:    <id> 01 04 3F 01 <preset_hex> FF
         """
         preset_hex = PRESET_MAP.get(preset_number)
         if not preset_hex:
-            return   # Should never happen; preset_number always comes from seat_positions
+            return
 
-        ip, cam_id = self._active_cam()
+        # Platform presets always go to Camera 1
+        if preset_number in (1, 2, 3):
+            ip, cam_id = IPAddress, Cam1ID
+            cam_name = 'Platform'
+        else:
+            ip, cam_id = self._active_cam()
+            cam_name = 'Platform' if self.Cam1.isChecked() else 'Comments'
 
         if self.Set1.isChecked():
             self._send_cmd(ip, cam_id, "01043f02" + preset_hex + "ff")
         elif self.Set2.isChecked():
-            cam_name = "Platform" if self.Cam1.isChecked() else "Comments"
             reply = QMessageBox.question(
                 self, f'Record Preset {preset_number} ({cam_name})',
                 "Are you sure you want to record this preset?",
@@ -1047,18 +1014,25 @@ class MainWindow(QMainWindow):
     #  CONFIG DIALOGS — change IP / VISCA ID at runtime without editing files
     # -------------------------------------------------------------------------
 
-    def PTZ1Address(self):
-        """Let the operator change Camera 1's IP address.  Saves to PTZ1IP.txt and restarts."""
+    def _change_ip(self, cam_num):
+        """
+        Generic dialog to change the IP address of Camera 1 or 2.
+        Validates, saves to the appropriate config file, and restarts.
+        """
+        cam_name  = 'Platform' if cam_num == 1 else 'Comments'
+        title     = f'{cam_name} PTZ Control'
+        current   = IPAddress if cam_num == 1 else IPAddress2
+        filename  = 'PTZ1IP.txt' if cam_num == 1 else 'PTZ2IP.txt'
         result = QMessageBox.warning(
-            self, 'Platform PTZ Control',
-            'Do you want to change the IP address for the Platform camera?',
+            self, title,
+            f'Do you want to change the IP address for the {cam_name} camera?',
             QMessageBox.Ok, QMessageBox.Cancel
         )
         if result == QMessageBox.Ok:
             text, ok = QInputDialog.getText(
-                self, 'Platform PTZ Control',
-                f'New IP address for Platform Camera  (current: {IPAddress}):',
-                text=IPAddress
+                self, title,
+                f'New IP address for {cam_name} Camera  (current: {current}):',
+                text=current
             )
             if ok and text:
                 if not _is_valid_ip(text):
@@ -1066,80 +1040,44 @@ class MainWindow(QMainWindow):
                                         f'"{text}" is not a valid IPv4 address.\n'
                                         'Enter four numbers 0-255 separated by dots.')
                     return
-                with open("PTZ1IP.txt", "w") as f:
+                with open(filename, 'w') as f:
                     f.write(text.strip())
                 os.execv(sys.executable, ['python3'] + sys.argv)
 
-    def PTZ2Address(self):
-        """Let the operator change Camera 2's IP address.  Saves to PTZ2IP.txt and restarts."""
+    def _change_cam_id(self, cam_num):
+        """
+        Generic dialog to change the VISCA device ID of Camera 1 or 2.
+        Validates hex format, saves to config file, and restarts.
+        """
+        cam_name  = 'Platform' if cam_num == 1 else 'Comments'
+        title     = f'{cam_name} PTZ Control'
+        current   = Cam1ID if cam_num == 1 else Cam2ID
+        filename  = 'Cam1ID.txt' if cam_num == 1 else 'Cam2ID.txt'
         result = QMessageBox.warning(
-            self, 'Comments PTZ Control',
-            'Do you want to change the IP address for the Comments camera?',
+            self, title,
+            f'Do you want to change the VISCA ID for the {cam_name} camera?',
             QMessageBox.Ok, QMessageBox.Cancel
         )
         if result == QMessageBox.Ok:
             text, ok = QInputDialog.getText(
-                self, 'Comments PTZ Control',
-                f'New IP address for Comments Camera  (current: {IPAddress2}):',
-                text=IPAddress2
-            )
-            if ok and text:
-                if not _is_valid_ip(text):
-                    QMessageBox.warning(self, 'Invalid IP Address',
-                                        f'"{text}" is not a valid IPv4 address.')
-                    return
-                with open("PTZ2IP.txt", "w") as f:
-                    f.write(text.strip())
-                os.execv(sys.executable, ['python3'] + sys.argv)
-
-    def PTZ1IDchange(self):
-        """
-        Let the operator change Camera 1's VISCA device ID.
-        Validates that the entered value is a legal hex string before saving,
-        because an invalid ID would cause binascii.Error when assembling commands.
-        Saves to Cam1ID.txt and restarts.
-        """
-        result = QMessageBox.warning(
-            self, 'Platform PTZ Control',
-            'Do you want to change the VISCA ID for the Platform camera?',
-            QMessageBox.Ok, QMessageBox.Cancel
-        )
-        if result == QMessageBox.Ok:
-            text, ok = QInputDialog.getText(
-                self, 'Platform PTZ Control',
-                f'New VISCA ID for Platform Camera  (current: {Cam1ID}):',
-                text=Cam1ID
+                self, title,
+                f'New VISCA ID for {cam_name} Camera  (current: {current}):',
+                text=current
             )
             if ok and text:
                 if not _is_valid_cam_id(text):
                     QMessageBox.warning(self, 'Invalid Camera ID',
                                         f'"{text}" is not valid hex (e.g. "81" or "82").')
                     return
-                with open("Cam1ID.txt", "w") as f:
+                with open(filename, 'w') as f:
                     f.write(text.strip())
                 os.execv(sys.executable, ['python3'] + sys.argv)
 
-    def PTZ2IDchange(self):
-        """Let the operator change Camera 2's VISCA device ID.  Saves to Cam2ID.txt and restarts."""
-        result = QMessageBox.warning(
-            self, 'Comments PTZ Control',
-            'Do you want to change the VISCA ID for the Comments camera?',
-            QMessageBox.Ok, QMessageBox.Cancel
-        )
-        if result == QMessageBox.Ok:
-            text, ok = QInputDialog.getText(
-                self, 'Comments PTZ Control',
-                f'New VISCA ID for Comments Camera  (current: {Cam2ID}):',
-                text=Cam2ID
-            )
-            if ok and text:
-                if not _is_valid_cam_id(text):
-                    QMessageBox.warning(self, 'Invalid Camera ID',
-                                        f'"{text}" is not valid hex (e.g. "81" or "82").')
-                    return
-                with open("Cam2ID.txt", "w") as f:
-                    f.write(text.strip())
-                os.execv(sys.executable, ['python3'] + sys.argv)
+    # Thin public wrappers kept so button .clicked connections need no change
+    def PTZ1Address(self):  self._change_ip(1)
+    def PTZ2Address(self):  self._change_ip(2)
+    def PTZ1IDchange(self): self._change_cam_id(1)
+    def PTZ2IDchange(self): self._change_cam_id(2)
 
     def Quit(self):
         """Close the application cleanly."""
