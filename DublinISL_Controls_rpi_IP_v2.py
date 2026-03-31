@@ -45,6 +45,9 @@ with open('Contact.txt', 'r') as f:
     Contact = f.read().strip()
 ButtonColor = "black"
 
+# ── Improvement 9: unified socket timeout constant ────────────────────────────
+SOCKET_TIMEOUT = 1
+
 # Initialise global DataStrings to avoid NameError before first use
 Cam1DataString  = binascii.unhexlify(Cam1ID  + "01060100000303FF")  # Stop command
 Cam1aDataString = binascii.unhexlify(Cam1ID  + "01060100000303FF")
@@ -54,22 +57,24 @@ Cam2aDataString = binascii.unhexlify(Cam2ID  + "01060100000303FF")
 #PTZ Address Check
 try:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(1)
+    s.settimeout(SOCKET_TIMEOUT)
     s.connect((IPAddress, 5678))
     Cam1DataString = binascii.unhexlify(Cam1ID + "090400FF")
     s.send(Cam1DataString)
     reply = s.recv(131072)
+    s.close()
     Cam1Check = "Green"
 except (socket.timeout, socket.error, OSError):
     Cam1Check = "Red"
 
 try:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(1)
+    s.settimeout(SOCKET_TIMEOUT)
     s.connect((IPAddress2, 5678))
     Cam2DataString = binascii.unhexlify(Cam2ID + "090400FF")
     s.send(Cam2DataString)
     reply = s.recv(131072)
+    s.close()
     Cam2Check = "Green"
 except (socket.timeout, socket.error, OSError):
     Cam2Check = "Red"
@@ -102,7 +107,7 @@ class MainWindow(QMainWindow):
         # Track backlight state per camera
         self.backlight_on = {1: False, 2: False}
 
-        screen = QApplication.primaryScreen().geometry()
+        # ── Improvement 7: removed unused `screen` variable ───────────────────
 
         pixmap = QPixmap("Background_ISL_v2.jpg")
         scaled_pixmap = pixmap.scaled(
@@ -192,7 +197,6 @@ class MainWindow(QMainWindow):
             setattr(self, f"Seat{seat_number}", button)
 
         # ── SESSION MANAGEMENT — top-left corner (single toggle button) ─────
-        # session_active: False = cameras OFF/standby, True = cameras ON
         self.session_active = False
 
         self.BtnSession = QPushButton('⏻', self)
@@ -204,7 +208,6 @@ class MainWindow(QMainWindow):
             "QPushButton:pressed{background-color: #5a0d0d}")
         self.BtnSession.clicked.connect(self.ToggleSession)
 
-        # Small status label sits to the right of the button
         self.SessionStatus = QLabel('OFF', self)
         self.SessionStatus.setGeometry(68, 22, 60, 20)
         self.SessionStatus.setStyleSheet("font: bold 12px; color: #8b1a1a")
@@ -232,6 +235,10 @@ class MainWindow(QMainWindow):
         Camgroup = QButtonGroup(self)
         Camgroup.addButton(self.Cam1)
         Camgroup.addButton(self.Cam2)
+
+        # ── Improvement 4: sync backlight UI when switching camera ────────────
+        self.Cam1.clicked.connect(self._update_backlight_ui)
+        self.Cam2.clicked.connect(self._update_backlight_ui)
 
         # ── RIGHT PANEL — Speed ───────────────────────────────────────────────
         self.SpeedSlow = QPushButton('SLOW', self)
@@ -330,13 +337,12 @@ class MainWindow(QMainWindow):
         Home.clicked.connect(self.HomeButton)
         Home.setStyleSheet("background-image: url(home.png); border: none")
 
-        # ── RIGHT PANEL — Focus & Exposure (NEW) ──────────────────────────────
+        # ── RIGHT PANEL — Focus & Exposure ────────────────────────────────────
         FocusExposureLabel = QLabel('Focus & Exposure', self)
         FocusExposureLabel.setGeometry(1500, 835, 360, 25)
         FocusExposureLabel.setAlignment(QtCore.Qt.AlignCenter)
         FocusExposureLabel.setStyleSheet("font: bold 16px; color: black")
 
-        # Focus row: Auto | One Push | Manual
         _focus_style = (
             "QPushButton{background-color: white; border: 2px solid #555; "
             "font: bold 13px; color: black; border-radius: 4px}"
@@ -361,7 +367,6 @@ class MainWindow(QMainWindow):
         BtnManualFocus.setStyleSheet(_focus_style)
         BtnManualFocus.clicked.connect(self.ManualFocus)
 
-        # Exposure row: Darker | Backlight | Brighter
         _exp_style = (
             "QPushButton{background-color: white; border: 2px solid #555; "
             "font: bold 13px; color: black; border-radius: 4px}"
@@ -374,7 +379,6 @@ class MainWindow(QMainWindow):
         BtnDarker.setStyleSheet(_exp_style)
         BtnDarker.clicked.connect(self.BrightnessDown)
 
-        # Backlight is a toggle — stored as instance variable for colour update
         self.BtnBacklight = QPushButton('Backlight\nOFF', self)
         self.BtnBacklight.setGeometry(1625, 920, 110, 45)
         self.BtnBacklight.setToolTip('Toggle backlight compensation (contraluz)')
@@ -441,19 +445,37 @@ class MainWindow(QMainWindow):
     def _send_cmd(self, ip, cam_id_hex, cmd_suffix):
         """Send a raw VISCA hex command to a camera. Returns True on success."""
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2)
-            s.connect((ip, 5678))
-            cmd = binascii.unhexlify(cam_id_hex + cmd_suffix)
-            s.send(cmd)
-            s.recv(131072)
-            s.close()
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(SOCKET_TIMEOUT)
+                s.connect((ip, 5678))
+                cmd = binascii.unhexlify(cam_id_hex + cmd_suffix)
+                s.send(cmd)
+                s.recv(131072)
             return True
         except (socket.timeout, socket.error, OSError):
             return False
 
-    @pyqtSlot()
+    def _active_cam(self):
+        """Returns (ip, cam_id) for the currently selected camera."""
+        if self.Cam1.isChecked():
+            return IPAddress, Cam1ID
+        return IPAddress2, Cam2ID
 
+    def _is_slow(self):
+        """Returns True if SLOW speed is selected."""
+        return self.SpeedSlow.isChecked()
+
+    # backlight UI sync when switching camera ────────────────
+    def _update_backlight_ui(self):
+        cam_key = 1 if self.Cam1.isChecked() else 2
+        if self.backlight_on[cam_key]:
+            self.BtnBacklight.setText('Backlight\nON')
+            self.BtnBacklight.setStyleSheet(self._backlight_style_on)
+        else:
+            self.BtnBacklight.setText('Backlight\nOFF')
+            self.BtnBacklight.setStyleSheet(self._backlight_style_off)
+
+    @pyqtSlot()
     # ── Error handlers ────────────────────────────────────────────────────────
     def ErrorCapture(self):
         print()
@@ -466,74 +488,71 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, 'Comments PTZ Control',
                             'Check That Comments Camera IP Address is set to  ' + IPAddress2 + '  and ID 2')
 
-    # ── Socket send helpers ───────────────────────────────────────────────────
     def Cam1Call(self):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect((IPAddress, 5678))
-            s.send(Cam1DataString)
-            reply = s.recv(131072)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(SOCKET_TIMEOUT)
+                s.connect((IPAddress, 5678))
+                s.send(Cam1DataString)
+                s.recv(131072)
         except (socket.timeout, OSError):
             self.ErrorCapture1()
 
     def Cam1aCall(self):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect((IPAddress, 5678))
-            s.send(Cam1aDataString)
-            reply = s.recv(131072)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(SOCKET_TIMEOUT)
+                s.connect((IPAddress, 5678))
+                s.send(Cam1aDataString)
+                s.recv(131072)
         except (socket.timeout, OSError):
             self.ErrorCapture1()
 
     def Cam2Call(self):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect((IPAddress2, 5678))
-            s.send(Cam2DataString)
-            reply = s.recv(131072)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(SOCKET_TIMEOUT)
+                s.connect((IPAddress2, 5678))
+                s.send(Cam2DataString)
+                s.recv(131072)
         except (socket.timeout, OSError):
             self.ErrorCapture2()
 
     def Cam2aCall(self):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect((IPAddress2, 5678))
-            s.send(Cam2aDataString)
-            reply = s.recv(131072)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(SOCKET_TIMEOUT)
+                s.connect((IPAddress2, 5678))
+                s.send(Cam2aDataString)
+                s.recv(131072)
         except (socket.timeout, OSError):
             self.ErrorCapture2()
 
     def Cam1Stop(self):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect((IPAddress, 5678))
-            s.send(binascii.unhexlify(Cam1ID + "01060100000303FF"))
-            s.recv(131072)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(SOCKET_TIMEOUT)
+                s.connect((IPAddress, 5678))
+                s.send(binascii.unhexlify(Cam1ID + "01060100000303FF"))
+                s.recv(131072)
         except (socket.timeout, OSError):
             print()
 
     def Cam2Stop(self):
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect((IPAddress2, 5678))
-            s.send(binascii.unhexlify(Cam2ID + "01060100000303FF"))
-            s.recv(131072)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(SOCKET_TIMEOUT)
+                s.connect((IPAddress2, 5678))
+                s.send(binascii.unhexlify(Cam2ID + "01060100000303FF"))
+                s.recv(131072)
         except (socket.timeout, OSError):
             print()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  SESSION MANAGEMENT  (NEW)
+    #  SESSION MANAGEMENT
     # ══════════════════════════════════════════════════════════════════════════
     def ToggleSession(self):
-        """Single toggle: OFF→ON starts session, ON→OFF ends session."""
         if not self.session_active:
-            # ── START ─────────────────────────────────────────────────────────
             self.session_active = True
             self.BtnSession.setEnabled(False)
             self.BtnSession.setStyleSheet(
@@ -546,7 +565,6 @@ class MainWindow(QMainWindow):
             self._send_cmd(IPAddress2, Cam2ID, "01040002FF")
             QtCore.QTimer.singleShot(8000, self._session_home)
         else:
-            # ── END ───────────────────────────────────────────────────────────
             reply = QMessageBox.question(
                 self, 'End Session',
                 'Power off both cameras and end the session?',
@@ -556,7 +574,6 @@ class MainWindow(QMainWindow):
                 self._send_cmd(IPAddress,  Cam1ID, "01040003FF")
                 self._send_cmd(IPAddress2, Cam2ID, "01040003FF")
                 self.session_active = False
-                # Button back to red (OFF state)
                 self.BtnSession.setStyleSheet(
                     "QPushButton{background-color: #8b1a1a; border: 2px solid #5a0d0d; "
                     "font: bold 26px; color: white; border-radius: 25px}"
@@ -566,10 +583,8 @@ class MainWindow(QMainWindow):
                 self.SessionStatus.setStyleSheet("font: bold 12px; color: #8b1a1a")
 
     def _session_home(self):
-        """Called 8 s after session start — moves both cameras to Home."""
         self._send_cmd(IPAddress,  Cam1ID, "010604FF")
         self._send_cmd(IPAddress2, Cam2ID, "010604FF")
-        # Button turns green (ON state)
         self.BtnSession.setStyleSheet(
             "QPushButton{background-color: #1a7a1a; border: 2px solid #0d4d0d; "
             "font: bold 26px; color: white; border-radius: 25px}"
@@ -580,14 +595,8 @@ class MainWindow(QMainWindow):
         self.SessionStatus.setStyleSheet("font: bold 12px; color: #1a7a1a")
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  FOCUS CONTROLS  (NEW)
+    #  FOCUS CONTROLS
     # ══════════════════════════════════════════════════════════════════════════
-    def _active_cam(self):
-        """Returns (ip, cam_id) for the currently selected camera."""
-        if self.Cam1.isChecked():
-            return IPAddress, Cam1ID
-        return IPAddress2, Cam2ID
-
     def AutoFocus(self):
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01043802FF")
@@ -597,12 +606,11 @@ class MainWindow(QMainWindow):
         self._send_cmd(ip, cam_id, "01043803FF")
 
     def OnePushAF(self):
-        """Trigger a single autofocus shot then stay in manual mode."""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01041801FF")
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  EXPOSURE CONTROLS  (NEW)
+    #  EXPOSURE CONTROLS
     # ══════════════════════════════════════════════════════════════════════════
     def BrightnessUp(self):
         ip, cam_id = self._active_cam()
@@ -613,309 +621,118 @@ class MainWindow(QMainWindow):
         self._send_cmd(ip, cam_id, "01040D03FF")
 
     def BacklightToggle(self):
-        """Toggle backlight compensation ON/OFF for the active camera."""
         ip, cam_id = self._active_cam()
         cam_key = 1 if self.Cam1.isChecked() else 2
         current = self.backlight_on[cam_key]
-
         if current:
-            # Turn OFF
             self._send_cmd(ip, cam_id, "01043303FF")
             self.backlight_on[cam_key] = False
-            self.BtnBacklight.setText('Backlight\nOFF')
-            self.BtnBacklight.setStyleSheet(self._backlight_style_off)
         else:
-            # Turn ON
             self._send_cmd(ip, cam_id, "01043302FF")
             self.backlight_on[cam_key] = True
-            self.BtnBacklight.setText('Backlight\nON')
-            self.BtnBacklight.setStyleSheet(self._backlight_style_on)
+        self._update_backlight_ui()
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  CAMERA MOVEMENT (unchanged)
+    #  CAMERA MOVEMENT 
     # ══════════════════════════════════════════════════════════════════════════
     def HomeButton(self):
-        if self.Cam1.isChecked():
-            global Cam1DataString
-            Cam1DataString = binascii.unhexlify(Cam1ID + "010604FF")
-            self.Cam1Call()
-        elif self.Cam2.isChecked():
-            global Cam2DataString
-            Cam2DataString = binascii.unhexlify(Cam2ID + "010604FF")
-            self.Cam2Call()
+        ip, cam_id = self._active_cam()
+        self._send_cmd(ip, cam_id, "010604FF")
 
     def UpLeft(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060104040101ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060110100101ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060104040101ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060110100101ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060104040101ff" if self._is_slow() else "01060110100101ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def Up(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060100040301FF")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060100100301FF")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060100040301FF")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060100100301FF")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060100040301FF" if self._is_slow() else "01060100100301FF"
+        self._send_cmd(ip, cam_id, suffix)
 
     def UpRight(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060104040201ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060110100201ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060104040201ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060110100201ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060104040201ff" if self._is_slow() else "01060110100201ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def Left(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060104000103ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060110000103ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060104000103ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060110000103ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060104000103ff" if self._is_slow() else "01060110000103ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def Right(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060104000203ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060110000203ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060104000203ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060110000203ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060104000203ff" if self._is_slow() else "01060110000203ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def DownLeft(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060104040102ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060110100102ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060104040102ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060110100102ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060104040102ff" if self._is_slow() else "01060110100102ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def Down(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060100040302ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060100100302ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060100040302ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060100100302ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060100040302ff" if self._is_slow() else "01060100100302ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def DownRight(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01060104040202ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01060110100202ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01060104040202ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01060110100202ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01060104040202ff" if self._is_slow() else "01060110100202ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def Stop(self):
-        if self.Cam1.isChecked():
-            global Cam1DataString
-            Cam1DataString = binascii.unhexlify(Cam1ID + "01060100000303FF")
-            self.Cam1Stop()
-        elif self.Cam2.isChecked():
-            global Cam2DataString
-            Cam2DataString = binascii.unhexlify(Cam2ID + "01060100000303FF")
-            self.Cam2Stop()
+        ip, cam_id = self._active_cam()
+        self._send_cmd(ip, cam_id, "01060100000303FF")
 
     def ZoomIn(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01040722ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01040726ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01040722ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01040726ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01040722ff" if self._is_slow() else "01040726ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def ZoomOut(self):
-        if self.Cam1.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam1DataString
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01040732ff")
-                self.Cam1Call()
-            elif self.SpeedFast.isChecked():
-                global Cam1aDataString
-                Cam1aDataString = binascii.unhexlify(Cam1ID + "01040736ff")
-                self.Cam1aCall()
-        elif self.Cam2.isChecked():
-            if self.SpeedSlow.isChecked():
-                global Cam2DataString
-                Cam2DataString = binascii.unhexlify(Cam2ID + "01040732ff")
-                self.Cam2Call()
-            elif self.SpeedFast.isChecked():
-                global Cam2aDataString
-                Cam2aDataString = binascii.unhexlify(Cam2ID + "01040736ff")
-                self.Cam2aCall()
+        ip, cam_id = self._active_cam()
+        suffix = "01040732ff" if self._is_slow() else "01040736ff"
+        self._send_cmd(ip, cam_id, suffix)
 
     def ZoomStop(self):
-        if self.Cam1.isChecked():
-            global Cam1DataString
-            Cam1DataString = binascii.unhexlify(Cam1ID + "01040700ff")
-            self.Cam1Stop()
-        elif self.Cam2.isChecked():
-            global Cam2DataString
-            Cam2DataString = binascii.unhexlify(Cam2ID + "01040700ff")
-            self.Cam2Stop()
+        ip, cam_id = self._active_cam()
+        self._send_cmd(ip, cam_id, "01040700ff")
 
-    # ── Call / Set Presets 1-3 (unchanged) ───────────────────────────────────
+    # ── Call / Set Presets 1-3 ────────────────────────────────────────────────
     def Go1(self):
         if self.Set1.isChecked():
-            global Cam1DataString
-            Cam1DataString = binascii.unhexlify(Cam1ID + "01043f0201ff")
-            self.Cam1Stop()
+            self._send_cmd(IPAddress, Cam1ID, "01043f0201ff")
         elif self.Set2.isChecked():
-            btnReply = QMessageBox.question(self, 'Record Chairman Position', "Are You Sure?",
-                                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if btnReply == QMessageBox.Yes:
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01043f0101ff")
-                self.Cam1Call()
+            reply = QMessageBox.question(self, 'Record Chairman Position', "Are You Sure?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self._send_cmd(IPAddress, Cam1ID, "01043f0101ff")
 
     def Go2(self):
         if self.Set1.isChecked():
-            global Cam1DataString
-            Cam1DataString = binascii.unhexlify(Cam1ID + "01043f0202ff")
-            self.Cam1Stop()
+            self._send_cmd(IPAddress, Cam1ID, "01043f0202ff")
         elif self.Set2.isChecked():
-            btnReply = QMessageBox.question(self, 'Record Platform Left', "Are You Sure?",
-                                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if btnReply == QMessageBox.Yes:
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01043f0102ff")
-                self.Cam1Call()
+            reply = QMessageBox.question(self, 'Record Platform Left', "Are You Sure?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self._send_cmd(IPAddress, Cam1ID, "01043f0102ff")
 
     def Go3(self):
         if self.Set1.isChecked():
-            global Cam1DataString
-            Cam1DataString = binascii.unhexlify(Cam1ID + "01043f0203ff")
-            self.Cam1Stop()
+            self._send_cmd(IPAddress, Cam1ID, "01043f0203ff")
         elif self.Set2.isChecked():
-            btnReply = QMessageBox.question(self, 'Record Platform Right', "Are You Sure?",
-                                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if btnReply == QMessageBox.Yes:
-                Cam1DataString = binascii.unhexlify(Cam1ID + "01043f0103ff")
-                self.Cam1Call()
+            reply = QMessageBox.question(self, 'Record Platform Right', "Are You Sure?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self._send_cmd(IPAddress, Cam1ID, "01043f0103ff")
 
-    # ── Generic preset handler 4-128 (unchanged) ─────────────────────────────
+    # ── Generic preset handler 4-128 ─────────────────────────────────────────
     def go_to_preset(self, preset_number):
-        global Cam1DataString, Cam2DataString
         preset_hex = PRESET_MAP.get(preset_number)
         if not preset_hex:
             return
-        cam_id   = Cam1ID if self.Cam1.isChecked() else Cam2ID
-        cam_call = self.Cam1Call if self.Cam1.isChecked() else self.Cam2Call
+        ip, cam_id = self._active_cam()
         if self.Set1.isChecked():
-            cmd = binascii.unhexlify(cam_id + "01043f02" + preset_hex + "ff")
-            if self.Cam1.isChecked():
-                Cam1DataString = cmd
-            else:
-                Cam2DataString = cmd
-            cam_call()
+            self._send_cmd(ip, cam_id, "01043f02" + preset_hex + "ff")
         elif self.Set2.isChecked():
             cam_name = "Platform" if self.Cam1.isChecked() else "Comments"
             reply = QMessageBox.question(
@@ -924,14 +741,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if reply == QMessageBox.Yes:
-                cmd = binascii.unhexlify(cam_id + "01043f01" + preset_hex + "ff")
-                if self.Cam1.isChecked():
-                    Cam1DataString = cmd
-                else:
-                    Cam2DataString = cmd
-                cam_call()
+                self._send_cmd(ip, cam_id, "01043f01" + preset_hex + "ff")
 
-    # ── Config / Quit / Help (unchanged) ─────────────────────────────────────
+    # ── Config / Quit / Help ──────────────────────────────────────────────────
     def Quit(self):
         sys.exit()
 
@@ -943,7 +755,9 @@ class MainWindow(QMainWindow):
             text, _ = QInputDialog().getText(self, 'Platform PTZ Control',
                                              'Change IP Address to control Platform Camera - Current Address is: ',
                                              text=IPAddress)
-            open("PTZ1IP.txt", "w+").write(text)
+            # ── Improvement 5: files opened with `with` ───────────────────────
+            with open("PTZ1IP.txt", "w") as f:
+                f.write(text)
             os.execv(sys.executable, ['python3'] + sys.argv)
 
     def PTZ2Address(self):
@@ -954,7 +768,8 @@ class MainWindow(QMainWindow):
             text, _ = QInputDialog().getText(self, 'Comments PTZ Control',
                                              'Change IP Address to control Comments Camera - Current Address is: ',
                                              text=IPAddress2)
-            open("PTZ2IP.txt", "w+").write(text)
+            with open("PTZ2IP.txt", "w") as f:
+                f.write(text)
             os.execv(sys.executable, ['python3'] + sys.argv)
 
     def PTZ1IDchange(self):
@@ -965,7 +780,8 @@ class MainWindow(QMainWindow):
             text, _ = QInputDialog().getText(self, 'Platform PTZ Control',
                                              'Change ID to control Platform Camera - Current ID is: ',
                                              text=Cam1ID)
-            open("Cam1ID.txt", "w+").write(text)
+            with open("Cam1ID.txt", "w") as f:
+                f.write(text)
             os.execv(sys.executable, ['python3'] + sys.argv)
 
     def PTZ2IDchange(self):
@@ -976,7 +792,8 @@ class MainWindow(QMainWindow):
             text, _ = QInputDialog().getText(self, 'Platform PTZ Control',
                                              'Change ID to control Comments Camera - Current ID is: ',
                                              text=Cam2ID)
-            open("Cam2ID.txt", "w+").write(text)
+            with open("Cam2ID.txt", "w") as f:
+                f.write(text)
             os.execv(sys.executable, ['python3'] + sys.argv)
 
     def HelpMsg(self):
@@ -985,7 +802,7 @@ class MainWindow(QMainWindow):
             print(result)
 
 
-# ── GoButton (unchanged) ──────────────────────────────────────────────────────
+# ── GoButton ──────────────────────────────────────────────────────────────────
 class GoButton(QPushButton):
 
     def __init__(self, Text, parent=MainWindow):
