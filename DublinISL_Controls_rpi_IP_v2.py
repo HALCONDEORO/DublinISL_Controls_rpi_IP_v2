@@ -372,7 +372,7 @@ class MainWindow(QMainWindow):
             lbl = QLabel(text, self)
             lbl.setGeometry(*geom)
             lbl.setAlignment(QtCore.Qt.AlignCenter)
-            lbl.setStyleSheet("font: bold 20px; color:black")
+            lbl.setStyleSheet("font: bold 16px; color:black")
             
         # ── RIGHT PANEL — Preset mode (Call / Set) ───────────────────────────
         # "Call" = recall a stored preset position.
