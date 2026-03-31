@@ -11,7 +11,6 @@
 #    Operators click seat buttons (numbered 4-128) to call presets, or use
 #    the arrow/zoom controls for manual framing.
 #
-#  Changes v3:
 #    - Session Management: single ⏻ button toggles ON/OFF
 #        ON:  Power both cameras, wait 8 s, go Home
 #        OFF: Power both cameras to standby
@@ -25,10 +24,6 @@
 #    Cam2ID.txt   VISCA hex device ID for Camera 2   (e.g. "82")
 #    Contact.txt  Support contact shown in Help dialog
 #
-#  VISCA preset numbering:
-#    Presets  4-89  → direct hex  (0x04-0x59)
-#    Presets 90-99  → mapped to   0x8C-0x95  (avoids VISCA reserved range)
-#    Presets 100-128→ direct hex  (0x64-0x80)
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -47,12 +42,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import pyqtSlot, Qt
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  FIX 6 — Load config files safely.
-#  Previously, missing files caused an unhandled FileNotFoundError at startup
-#  with no helpful message.  We now fall back to sensible defaults and warn
-#  the user so the app still opens even if a file is absent.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 def _read_config(filename, default):
     """
@@ -84,13 +74,7 @@ ButtonColor = "black"
 SOCKET_TIMEOUT = 1  # seconds
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  FIX 7 — Remove mutable globals for DataStrings.
-#  Previously Cam1DataString / Cam2DataString were module-level variables that
-#  were silently mutated during the startup camera check.  Any function that
-#  read them later received whatever value the last socket attempt had left,
-#  which is unpredictable if a check fails halfway.
-#
-#  We now build VISCA commands inline or via _send_cmd(), so no shared mutable
+# VISCA commands inline or via _send_cmd(), so no shared mutable
 #  state is needed.  The startup connectivity check below only writes to local
 #  variables (Cam1Check / Cam2Check) that control the UI indicator colour.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,14 +159,13 @@ class MainWindow(QMainWindow):
       Left area  (x 0-1460)  : Seat-position preset buttons on a background image
       Right panel (x 1500+)  : Camera selection, speed, preset mode, PTZ arrows,
                                 zoom, focus/exposure controls, config/quit buttons
-      Top-left   (x 10, y 10): Session toggle button (⏻) with status label
     """
 
     def __init__(self):
         super().__init__()
 
         # ── Window geometry ───────────────────────────────────────────────────
-        self.setWindowTitle('Eccles Camera Controls')
+        self.setWindowTitle('Camera Controls')
         self.setGeometry(0, 0, 1920, 1080)
 
         # Per-camera backlight state: True = backlight compensation ON
