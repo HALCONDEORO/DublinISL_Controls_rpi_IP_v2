@@ -11,11 +11,14 @@
 #    Operators click seat buttons (numbered 4-128) to call presets, or use
 #    the arrow/zoom controls for manual framing.
 #
-#    - Session Management: single ⏻ button toggles ON/OFF
+#    - Session Management: single button toggles ON/OFF
 #        ON:  Power both cameras, wait 8 s, go Home
 #        OFF: Power both cameras to standby
 #    - Focus & Exposure panel: Auto Focus / One Push AF / Manual Focus,
 #        Brightness Up/Down, Backlight toggle per camera
+#    - Speed control: continuous QSlider (SLOW to FAST) replaces the old
+#        two-button pair.  Pan/tilt speed 1-18 and zoom speed 1-7 are both
+#        derived from the same slider value so all axes scale proportionally.
 #
 #  Config files (must exist in the working directory):
 #    PTZ1IP.txt   IP address of the Platform camera  (default 172.16.1.11)
@@ -23,7 +26,6 @@
 #    Cam1ID.txt   VISCA hex device ID for Camera 1   (e.g. "81")
 #    Cam2ID.txt   VISCA hex device ID for Camera 2   (e.g. "82")
 #    Contact.txt  Support contact shown in Help dialog
-# prueba
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -36,97 +38,116 @@ import binascii
 import PyQt5
 from PyQt5 import QtGui, QtWidgets, QtCore
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QMainWindow, QPushButton,
-    QLabel, QMessageBox, QHBoxLayout, QButtonGroup, QInputDialog
+    QApplication, QMainWindow, QPushButton,
+    QLabel, QMessageBox, QButtonGroup, QInputDialog, QSlider
 )
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtCore import pyqtSlot, Qt
+from PyQt5.QtCore import Qt
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  Speed slider constants
+#
+#  SPEED_MIN / SPEED_MAX define the range of the pan/tilt speed byte in VISCA
+#  Pan-Tilt Drive commands.  The VISCA spec allows 0x01-0x18 (1-24) for pan
+#  and 0x01-0x14 (1-20) for tilt; we cap at 18 so the value is safe for both.
+#
+#  SPEED_DEFAULT is the position the slider starts at on launch.
+#  Value 8 sits comfortably in the mid-range; the old "SLOW" was 4, "FAST" 16.
+#
+#  Zoom speed occupies the low nibble of the zoom byte (valid range 0-7).
+#  It is derived from the pan/tilt slider via linear interpolation so both
+#  axes always feel proportional to each other.
+# ─────────────────────────────────────────────────────────────────────────────
+SPEED_MIN     = 1   # Slowest pan/tilt speed (VISCA minimum is 1)
+SPEED_MAX     = 18  # Fastest safe pan/tilt speed (ceiling for both axes)
+SPEED_DEFAULT = 8   # Slider starts here; roughly medium pace
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Shared network constant
+# ─────────────────────────────────────────────────────────────────────────────
+SOCKET_TIMEOUT = 1  # Seconds used for every TCP connect / send / recv call
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Config helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _read_config(filename, default):
     """
-    Read a single-line text config file and return its stripped contents.
+    Read a single-line text config file; return its stripped contents.
     If the file is missing or unreadable, log a warning and return `default`.
+    The application remains functional even when config files are absent.
     """
     try:
         with open(filename, 'r') as f:
             return f.read().strip()
     except (FileNotFoundError, IOError) as exc:
-        print(f"[WARNING] Could not read '{filename}': {exc}  → using default '{default}'")
+        print(f"[WARNING] Could not read '{filename}': {exc}  -> using default '{default}'")
         return default
 
 
-# Load all five config files; the app stays functional even if any are absent.
 IPAddress  = _read_config('PTZ1IP.txt',  '172.16.1.11')   # Platform camera IP
 IPAddress2 = _read_config('PTZ2IP.txt',  '172.16.1.12')   # Comments camera IP
-Cam1ID     = _read_config('Cam1ID.txt',  '81')             # VISCA device ID (hex string)
+Cam1ID     = _read_config('Cam1ID.txt',  '81')             # VISCA device ID hex string
 Cam2ID     = _read_config('Cam2ID.txt',  '82')
 Contact    = _read_config('Contact.txt', 'No contact information available.')
 
-# UI colour used for seat-button text
-ButtonColor = "black"
+ButtonColor = "black"   # Seat-button text colour
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Shared network constant
-#  One place to change the TCP connect/send timeout for all socket calls.
-# ─────────────────────────────────────────────────────────────────────────────
-SOCKET_TIMEOUT = 1  # seconds
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VISCA commands inline or via _send_cmd(), so no shared mutable
-#  state is needed.  The startup connectivity check below only writes to local
-#  variables (Cam1Check / Cam2Check) that control the UI indicator colour.
+#  Startup camera connectivity check
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _check_camera(ip, cam_id):
     """
-    Perform a one-shot TCP connection to verify a camera is reachable.
+    Try a one-shot TCP connection to verify a camera is reachable at startup.
     Sends a VISCA power-status inquiry and discards the reply.
-    Returns "Green" if the camera responded, "Red" otherwise.
+    Returns "Green" if the camera responded within SOCKET_TIMEOUT, else "Red".
+    The returned string is used directly as a Qt CSS colour for the address label.
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(SOCKET_TIMEOUT)
             s.connect((ip, 5678))
-            # VISCA power inquiry: <id>090400FF
-            s.send(binascii.unhexlify(cam_id + "090400FF"))
+            s.send(binascii.unhexlify(cam_id + "090400FF"))   # VISCA power inquiry
             s.recv(131072)
         return "Green"
     except (socket.timeout, socket.error, OSError):
         return "Red"
 
 
-# Run connectivity checks at startup; results colour the address labels
 Cam1Check = _check_camera(IPAddress,  Cam1ID)
 Cam2Check = _check_camera(IPAddress2, Cam2ID)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-#  VISCA preset number → hex byte mapping
+#  VISCA preset number -> hex byte mapping
 #
-#  VISCA uses certain byte values internally (e.g. 0x5A-0x8B are reserved).
-#  Presets 90-99 would land in that range, so we remap them to 0x8C-0x95.
+#  Presets 90-99 would land in the VISCA-reserved range 0x5A-0x8B, so they
+#  are remapped to 0x8C-0x95.  All others use direct two-digit hex conversion.
 # ─────────────────────────────────────────────────────────────────────────────
 PRESET_MAP = {}
-for _i in range(4, 90):       # Direct hex for 4-89
+for _i in range(4, 90):
     PRESET_MAP[_i] = f"{_i:02X}"
-for _i in range(90, 100):     # Remap 90-99 → 0x8C-0x95
+for _i in range(90, 100):
     PRESET_MAP[_i] = f"{0x8C + (_i - 90):02X}"
-for _i in range(100, 129):    # Direct hex for 100-128
+for _i in range(100, 129):
     PRESET_MAP[_i] = f"{_i:02X}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Validation helpers 
+#  Validation helpers (used in the config dialogs)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_valid_ip(text):
     """
-    Return True if `text` is a plausible IPv4 address (four octets 0-255).
-    Does not perform DNS resolution.
+    Return True if text looks like a valid IPv4 address (four octets, each 0-255).
+    Does not perform DNS resolution or reachability testing.
     """
-    pattern = r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$'
-    match = re.match(pattern, text.strip())
+    match = re.match(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$', text.strip())
     if not match:
         return False
     return all(0 <= int(g) <= 255 for g in match.groups())
@@ -134,108 +155,105 @@ def _is_valid_ip(text):
 
 def _is_valid_cam_id(text):
     """
-    Return True if `text` is a non-empty hexadecimal string (e.g. "81", "82").
-    VISCA IDs are typically one byte written as two hex digits.
+    Return True if text is a non-empty hexadecimal string (e.g. "81", "82").
+    VISCA device IDs are typically one byte written as two hex digits.
+    An invalid ID would cause binascii.Error when VISCA commands are assembled.
     """
     text = text.strip()
     if not text:
         return False
     try:
-        binascii.unhexlify(text)   # Will raise if not valid hex
+        binascii.unhexlify(text)
         return True
     except (binascii.Error, ValueError):
         return False
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  MainWindow
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 class MainWindow(QMainWindow):
     """
-    Main application window.
+    Main application window (1920x1080).
 
-    Layout (1920×1080):
-      Left area  (x 0-1460)  : Seat-position preset buttons on a background image
-      Right panel (x 1500+)  : Camera selection, speed, preset mode, PTZ arrows,
-                                zoom, focus/exposure controls, config/quit buttons
+    Layout:
+      Left area  (x 0-1460)  : Seat-position preset buttons on a background image.
+      Right panel (x 1500+)  : Camera selection, speed slider, preset mode,
+                               PTZ arrows, zoom, focus/exposure, config buttons.
     """
 
     def __init__(self):
         super().__init__()
 
-        # ── Window geometry ───────────────────────────────────────────────────
         self.setWindowTitle('Camera Controls')
         self.setGeometry(0, 0, 1920, 1080)
 
-        # Per-camera backlight state: True = backlight compensation ON
-        # Stored here so the UI label stays correct when switching cameras.
+        # Per-camera backlight compensation state (True = ON).
+        # Stored here so the Backlight button label stays correct when the
+        # operator switches between Camera 1 and Camera 2.
         self.backlight_on = {1: False, 2: False}
 
         # ── Background image ──────────────────────────────────────────────────
         # Scales the seating-plan JPEG to fill the window behind all widgets.
         pixmap = QPixmap("Background_ISL_v2.jpg")
-        scaled_pixmap = pixmap.scaled(
-            1920, 1080,
-            Qt.IgnoreAspectRatio, Qt.SmoothTransformation
-        )
+        scaled_pixmap = pixmap.scaled(1920, 1080, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         background = QLabel(self)
         background.setPixmap(scaled_pixmap)
         background.setGeometry(0, -30, 1920, 1080)
         background.lower()   # Push behind every other widget
 
         # ── Seat pixel positions ──────────────────────────────────────────────
-        # Maps preset number → (x, y) top-left corner of the button on screen.
-        # Numbers match the physical seat numbers printed on the background image.
+        # Maps preset number -> (x, y) top-left corner of its button on screen.
         seat_positions = {
             # Row 1
-            4:(70,210),   5:(131,210),  6:(192,210),  7:(253,210),
-            8:(479,210),  9:(540,210), 10:(601,210), 11:(662,210),
-           12:(722,210), 13:(783,210), 14:(844,210),
-           15:(1070,210),16:(1130,210),17:(1191,210),18:(1252,210),
+             4:(70,210),  5:(131,210),  6:(192,210),  7:(253,210),
+             8:(479,210), 9:(540,210), 10:(601,210), 11:(662,210),
+            12:(722,210),13:(783,210), 14:(844,210),
+            15:(1070,210),16:(1130,210),17:(1191,210),18:(1252,210),
             # Row 2
-           19:(70,295),  20:(131,295), 21:(192,295), 22:(253,295),
-           23:(479,295), 24:(540,295), 25:(601,295), 26:(662,295),
-           27:(722,295), 28:(783,295), 29:(844,295),
-           30:(1070,295),31:(1130,295),32:(1191,295),33:(1252,295),
+            19:(70,295), 20:(131,295), 21:(192,295), 22:(253,295),
+            23:(479,295),24:(540,295), 25:(601,295), 26:(662,295),
+            27:(722,295),28:(783,295), 29:(844,295),
+            30:(1070,295),31:(1130,295),32:(1191,295),33:(1252,295),
             # Row 3
-           34:(70,382),  35:(131,382), 36:(192,382), 37:(253,382),
-           38:(479,382), 39:(540,382), 40:(601,382), 41:(662,382),
-           42:(723,382), 43:(783,382), 44:(844,382),
-           45:(1070,382),46:(1130,382),47:(1191,382),48:(1252,382),
+            34:(70,382), 35:(131,382), 36:(192,382), 37:(253,382),
+            38:(479,382),39:(540,382), 40:(601,382), 41:(662,382),
+            42:(723,382),43:(783,382), 44:(844,382),
+            45:(1070,382),46:(1130,382),47:(1191,382),48:(1252,382),
             # Row 4
-           49:(70,465),  50:(131,465), 51:(192,465), 52:(253,465),
-           53:(479,465), 54:(540,465), 55:(601,465), 56:(662,465),
-           57:(722,465), 58:(783,465), 59:(844,465),
-           60:(1070,465),61:(1130,465),62:(1191,465),63:(1252,465),
+            49:(70,465), 50:(131,465), 51:(192,465), 52:(253,465),
+            53:(479,465),54:(540,465), 55:(601,465), 56:(662,465),
+            57:(722,465),58:(783,465), 59:(844,465),
+            60:(1070,465),61:(1130,465),62:(1191,465),63:(1252,465),
             # Row 5
-           64:(70,550),  65:(131,550), 66:(192,550), 67:(253,550),
-           68:(479,550), 69:(540,550), 70:(601,550), 71:(662,550),
-           72:(722,550), 73:(783,550), 74:(844,550),
-           75:(1070,550),76:(1130,550),77:(1191,550),78:(1252,550),
+            64:(70,550), 65:(131,550), 66:(192,550), 67:(253,550),
+            68:(479,550),69:(540,550), 70:(601,550), 71:(662,550),
+            72:(722,550),73:(783,550), 74:(844,550),
+            75:(1070,550),76:(1130,550),77:(1191,550),78:(1252,550),
             # Row 6
-           79:(70,635),  80:(131,635), 81:(192,635), 82:(253,635),
-           83:(479,635), 84:(540,635), 85:(601,635), 86:(662,635),
-           87:(722,635), 88:(783,635), 89:(844,635),
-           90:(1070,635),91:(1130,635),92:(1191,635),93:(1252,635),
+            79:(70,635), 80:(131,635), 81:(192,635), 82:(253,635),
+            83:(479,635),84:(540,635), 85:(601,635), 86:(662,635),
+            87:(722,635),88:(783,635), 89:(844,635),
+            90:(1070,635),91:(1130,635),92:(1191,635),93:(1252,635),
             # Row 7
-           94:(70,720),  95:(131,720), 96:(192,720), 97:(253,720),
-           98:(479,720), 99:(540,720),100:(601,720),101:(662,720),
-          102:(722,720),103:(783,720),104:(844,720),
-          105:(1070,720),106:(1130,720),107:(1191,720),108:(1252,720),
+            94:(70,720), 95:(131,720), 96:(192,720), 97:(253,720),
+            98:(479,720),99:(540,720),100:(601,720),101:(662,720),
+           102:(722,720),103:(783,720),104:(844,720),
+           105:(1070,720),106:(1130,720),107:(1191,720),108:(1252,720),
             # Row 8
-          109:(70,805), 110:(131,805),111:(192,805),112:(253,805),
-          113:(479,805),114:(540,805),115:(601,805),116:(662,805),
-          117:(722,805),118:(783,805),119:(844,805),
-          120:(1070,805),121:(1130,805),122:(1191,805),123:(1252,805),
+           109:(70,805), 110:(131,805),111:(192,805),112:(253,805),
+           113:(479,805),114:(540,805),115:(601,805),116:(662,805),
+           117:(722,805),118:(783,805),119:(844,805),
+           120:(1070,805),121:(1130,805),122:(1191,805),123:(1252,805),
             # Row 9
-          124:(108,975),125:(201,975),126:(481,975),127:(578,975),
+           124:(108,975),125:(201,975),126:(481,975),127:(578,975),
             # Wheelchair space
-          128:(150,110),
+           128:(150,110),
         }
 
-        # ── Platform preset buttons (fixed positions above seating plan) ───────
-        # These three call hardcoded presets on Camera 1 (platform camera only).
+        # ── Platform preset buttons (Chairman, Left, Right) ───────────────────
+        # These three call hardcoded presets on Camera 1 only (platform camera).
         Preset1 = QPushButton('Chairman', self)
         Preset1.resize(110, 110)
         Preset1.move(623, 35)
@@ -263,29 +281,23 @@ class MainWindow(QMainWindow):
         )
         Preset3.clicked.connect(self.Go3)
 
-        # ── Seat buttons (dynamic, one per entry in seat_positions) ───────────
-        # Each button calls go_to_preset(n) with the seat's preset number.
-        # We use a default-argument trick (n=seat_number) to capture the loop
-        # variable correctly inside the lambda.
+        # ── Seat buttons (one per entry in seat_positions) ────────────────────
         for seat_number in range(4, 129):
             if seat_number not in seat_positions:
                 continue
             x, y = seat_positions[seat_number]
             button = GoButton(str(seat_number), self)
             button.move(x, y)
+            # Default-argument trick captures the loop variable correctly
             button.clicked.connect(
                 lambda checked=False, n=seat_number: self.go_to_preset(n)
             )
-            # Store a reference so the button isn't garbage-collected
-            setattr(self, f"Seat{seat_number}", button)
+            setattr(self, f"Seat{seat_number}", button)   # Prevent GC
 
         # ── SESSION MANAGEMENT — top-left corner ──────────────────────────────
-        # A single ⏻ button toggles between OFF (red) → Starting → ON (green).
-        # ON:  Powers both cameras, waits 8 s, sends both to Home position.
-        # OFF: Powers both cameras to standby after user confirmation.
         self.session_active = False
 
-        self.BtnSession = QPushButton('⏻', self)
+        self.BtnSession = QPushButton('\u23fb', self)   # Unicode power symbol
         self.BtnSession.setGeometry(10, 10, 50, 50)
         self.BtnSession.setToolTip('Start Session: Power ON both cameras and go Home')
         self.BtnSession.setStyleSheet(
@@ -295,14 +307,23 @@ class MainWindow(QMainWindow):
         )
         self.BtnSession.clicked.connect(self.ToggleSession)
 
-        # Small text label next to the session button showing OFF / Starting… / ON
         self.SessionStatus = QLabel('OFF', self)
         self.SessionStatus.setGeometry(68, 22, 60, 20)
         self.SessionStatus.setStyleSheet("font: bold 12px; color: #8b1a1a")
 
+        # ── RIGHT PANEL — Section labels ──────────────────────────────────────
+        for text, geom in [
+            ('Camera Selection', (1500,  20, 360, 30)),
+            ('PTZ Speed',        (1500, 138, 360, 30)),
+            ('Camera Presets',   (1500, 253, 360, 30)),
+            ('Camera Controls',  (1500, 367, 360, 30)),
+        ]:
+            lbl = QLabel(text, self)
+            lbl.setGeometry(*geom)
+            lbl.setAlignment(QtCore.Qt.AlignCenter)
+            lbl.setStyleSheet("font: bold 20px; color: black")
+
         # ── RIGHT PANEL — Camera Selection ────────────────────────────────────
-        # Exclusive checkable buttons; only one can be active at a time.
-        # Platform = Camera 1; Comments = Camera 2.
         _cam_style = (
             "QPushButton{background-color: white; border: 3px solid green; "
             "font: bold 20px; color: black}"
@@ -313,7 +334,7 @@ class MainWindow(QMainWindow):
         self.Cam1.setGeometry(1500, 60, 180, 70)
         self.Cam1.setCheckable(True)
         self.Cam1.setAutoExclusive(True)
-        self.Cam1.setChecked(True)    # Platform camera selected by default
+        self.Cam1.setChecked(True)
         self.Cam1.setToolTip('Select Platform Camera')
         self.Cam1.setStyleSheet(_cam_style)
 
@@ -324,59 +345,90 @@ class MainWindow(QMainWindow):
         self.Cam2.setToolTip('Select Comments Camera')
         self.Cam2.setStyleSheet(_cam_style)
 
-        # Group ensures mutual exclusivity at the Qt level as well
         Camgroup = QButtonGroup(self)
         Camgroup.addButton(self.Cam1)
         Camgroup.addButton(self.Cam2)
 
-        # When switching cameras, refresh the Backlight button label/colour
-        # so it reflects that camera's individual backlight state.
+        # Refresh the Backlight button label whenever the active camera changes
         self.Cam1.clicked.connect(self._update_backlight_ui)
         self.Cam2.clicked.connect(self._update_backlight_ui)
 
-        # ── RIGHT PANEL — PTZ Speed ───────────────────────────────────────────
-        # SLOW and FAST produce different VISCA speed bytes in movement commands.
-        _speed_style = (
-            "QPushButton{background-color: white; border: 3px solid green; "
-            "font: bold 20px; color: black}"
-            "QPushButton:Checked{background-color: green; font: bold 20px; color: white}"
+        # ── RIGHT PANEL — PTZ Speed Slider ────────────────────────────────────
+        #
+        #  Replaces the old SLOW / FAST two-button toggle.
+        #
+        #  The slider exposes a continuous integer range [SPEED_MIN, SPEED_MAX]
+        #  (default 1-18).  Moving the handle to the left slows all camera
+        #  movements; moving it to the right speeds them up.
+        #
+        #  The pan/tilt speed byte in VISCA Pan-Tilt Drive commands is set
+        #  directly to this value.  The zoom speed nibble (0-7) is derived via
+        #  linear interpolation so both axes always feel proportional.
+        #
+        #  Visual layout inside the 360 px-wide right panel (x 1500-1860):
+        #
+        #   x=1500        x=1560                  x=1790  x=1860
+        #     SLOW  |====== green slider track ======|  FAST
+        #                  Speed: 8  (medium)
+        #
+        # ── Left end-label: "SLOW" ────────────────────────────────────────────
+        SlowLabel = QLabel('SLOW', self)
+        SlowLabel.setGeometry(1500, 190, 55, 20)
+        SlowLabel.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        SlowLabel.setStyleSheet("font: bold 13px; color: #444")
+
+        # ── QSlider (horizontal, green handle) ───────────────────────────────
+        self.SpeedSlider = QSlider(Qt.Horizontal, self)
+        self.SpeedSlider.setGeometry(1560, 172, 230, 48)
+        self.SpeedSlider.setMinimum(SPEED_MIN)
+        self.SpeedSlider.setMaximum(SPEED_MAX)
+        self.SpeedSlider.setValue(SPEED_DEFAULT)
+        # Tick marks appear below the groove; one tick every 3 steps
+        self.SpeedSlider.setTickPosition(QSlider.TicksBelow)
+        self.SpeedSlider.setTickInterval(3)
+        self.SpeedSlider.setToolTip(
+            f'Drag to set PTZ speed  (min {SPEED_MIN} = slowest  /  max {SPEED_MAX} = fastest)'
         )
+        # Green palette to match the rest of the right-panel controls
+        self.SpeedSlider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 8px;
+                background: #cccccc;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #1a7a1a;
+                border: 2px solid #0d4d0d;
+                width: 24px;
+                height: 24px;
+                margin: -9px 0;
+                border-radius: 12px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #4caf50;
+                border-radius: 4px;
+            }
+        """)
 
-        self.SpeedSlow = QPushButton('SLOW', self)
-        self.SpeedSlow.setGeometry(1500, 175, 180, 70)
-        self.SpeedSlow.setCheckable(True)
-        self.SpeedSlow.setAutoExclusive(True)
-        self.SpeedSlow.setChecked(True)
-        self.SpeedSlow.setToolTip('Set Camera PTZ Speed to SLOW')
-        self.SpeedSlow.setStyleSheet(_speed_style)
+        # ── Right end-label: "FAST" ───────────────────────────────────────────
+        FastLabel = QLabel('FAST', self)
+        FastLabel.setGeometry(1797, 190, 55, 20)
+        FastLabel.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        FastLabel.setStyleSheet("font: bold 13px; color: #444")
 
-        self.SpeedFast = QPushButton('FAST', self)
-        self.SpeedFast.setGeometry(1680, 175, 180, 70)
-        self.SpeedFast.setCheckable(True)
-        self.SpeedFast.setAutoExclusive(True)
-        self.SpeedFast.setToolTip('Set Camera PTZ Speed to FAST')
-        self.SpeedFast.setStyleSheet(_speed_style)
+        # ── Numeric readout ───────────────────────────────────────────────────
+        # Shows the exact speed value and a plain-English description so
+        # operators always know where they are on the scale at a glance.
+        # Updated in real time via the slider's valueChanged signal.
+        self.SpeedValueLabel = QLabel(self._speed_label_text(SPEED_DEFAULT), self)
+        self.SpeedValueLabel.setGeometry(1500, 224, 360, 20)
+        self.SpeedValueLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.SpeedValueLabel.setStyleSheet("font: 12px; color: #555")
 
-        Speedgroup = QButtonGroup(self)
-        Speedgroup.addButton(self.SpeedSlow)
-        Speedgroup.addButton(self.SpeedFast)
+        # Wire the slider so the readout updates immediately as the handle moves
+        self.SpeedSlider.valueChanged.connect(self._on_speed_changed)
 
-
-        # ── RIGHT PANEL — Section labels ──────────────────────────────────────
-        for text, geom in [
-            ('Camera Selection',  (1500,  20, 360, 30)),
-            ('PTZ Speed',         (1500, 138, 360, 30)),
-            ('Camera Presets',    (1500, 253, 360, 30)),
-            ('Camera Controls',   (1500, 367, 360, 30)),
-        ]:
-            lbl = QLabel(text, self)
-            lbl.setGeometry(*geom)
-            lbl.setAlignment(QtCore.Qt.AlignCenter)
-            lbl.setStyleSheet("font: bold 16px; color:black")
-            
-        # ── RIGHT PANEL — Preset mode (Call / Set) ───────────────────────────
-        # "Call" = recall a stored preset position.
-        # "Set"  = overwrite a preset with the camera's current position.
+        # ── RIGHT PANEL — Preset mode (Call / Set) ────────────────────────────
         _preset_style = (
             "QPushButton{background-color: white; border: 3px solid green; "
             "font: bold 20px; color: black}"
@@ -403,7 +455,7 @@ class MainWindow(QMainWindow):
         Setgroup.addButton(self.Set2)
 
         # ── RIGHT PANEL — Zoom buttons ────────────────────────────────────────
-        # pressed → start zoom;  released → stop zoom (separate VISCA command)
+        # pressed -> start zoom command;  released -> ZoomStop
         ZoomIn = QPushButton(self)
         ZoomIn.setGeometry(1680, 403, 100, 100)
         ZoomIn.pressed.connect(self.ZoomIn)
@@ -417,8 +469,7 @@ class MainWindow(QMainWindow):
         ZoomOut.setStyleSheet("background-image: url(ZoomOut_120.png); border: none")
 
         # ── RIGHT PANEL — Arrow / direction buttons ───────────────────────────
-        # _arrow_btn() creates a transparent button with a rotated arrow icon.
-        # pressed → start movement;  released → stop (Stop command).
+        # pressed -> send continuous-move command;  released -> Stop
         UpLeft    = self._arrow_btn(1500, 510, 135); UpLeft.pressed.connect(self.UpLeft);       UpLeft.released.connect(self.Stop)
         Up        = self._arrow_btn(1605, 510, 180); Up.pressed.connect(self.Up);               Up.released.connect(self.Stop)
         UpRight   = self._arrow_btn(1710, 510, 225); UpRight.pressed.connect(self.UpRight);     UpRight.released.connect(self.Stop)
@@ -428,7 +479,6 @@ class MainWindow(QMainWindow):
         Down      = self._arrow_btn(1605, 724,   0); Down.pressed.connect(self.Down);           Down.released.connect(self.Stop)
         DownRight = self._arrow_btn(1710, 724, 315); DownRight.pressed.connect(self.DownRight); DownRight.released.connect(self.Stop)
 
-        # Home button: sends camera to its factory Home position
         Home = QPushButton('', self)
         Home.setGeometry(1605, 617, 100, 100)
         Home.clicked.connect(self.HomeButton)
@@ -446,24 +496,21 @@ class MainWindow(QMainWindow):
             "QPushButton:pressed{background-color: #ccc}"
         )
 
-        # Auto Focus: camera continuously adjusts focus automatically
         BtnAutoFocus = QPushButton('Auto\nFocus', self)
         BtnAutoFocus.setGeometry(1500, 863, 110, 50)
-        BtnAutoFocus.setToolTip('Auto Focus ON')
+        BtnAutoFocus.setToolTip('Enable continuous autofocus')
         BtnAutoFocus.setStyleSheet(_focus_style)
         BtnAutoFocus.clicked.connect(self.AutoFocus)
 
-        # One Push AF: camera focuses once then returns to manual mode
         BtnOnePush = QPushButton('One Push\nAF', self)
         BtnOnePush.setGeometry(1625, 863, 110, 50)
         BtnOnePush.setToolTip('One-shot autofocus then return to manual')
         BtnOnePush.setStyleSheet(_focus_style)
         BtnOnePush.clicked.connect(self.OnePushAF)
 
-        # Manual Focus: locks focus, operator adjusts via camera menu
         BtnManualFocus = QPushButton('Manual\nFocus', self)
         BtnManualFocus.setGeometry(1750, 863, 110, 50)
-        BtnManualFocus.setToolTip('Manual Focus mode')
+        BtnManualFocus.setToolTip('Lock to manual focus mode')
         BtnManualFocus.setStyleSheet(_focus_style)
         BtnManualFocus.clicked.connect(self.ManualFocus)
 
@@ -473,19 +520,17 @@ class MainWindow(QMainWindow):
             "QPushButton:pressed{background-color: #ccc}"
         )
 
-        # Brightness Down: decreases exposure compensation by one step
-        BtnDarker = QPushButton('▼ Darker', self)
+        BtnDarker = QPushButton('\u25bc Darker', self)
         BtnDarker.setGeometry(1500, 920, 110, 45)
-        BtnDarker.setToolTip('Decrease brightness')
+        BtnDarker.setToolTip('Decrease exposure compensation one step')
         BtnDarker.setStyleSheet(_exp_style)
         BtnDarker.clicked.connect(self.BrightnessDown)
 
-        # Backlight toggle: compensates for subjects lit from behind (contraluz).
-        # Button colour reflects the current camera's backlight state.
+        # Backlight toggle: colour changes to amber when ON to make the state
+        # immediately obvious across the room.
         self.BtnBacklight = QPushButton('Backlight\nOFF', self)
         self.BtnBacklight.setGeometry(1625, 920, 110, 45)
         self.BtnBacklight.setToolTip('Toggle backlight compensation (contraluz)')
-        # Two style sheets stored as attributes so _update_backlight_ui() can swap them
         self._backlight_style_off = (
             "QPushButton{background-color: white; border: 2px solid #555; "
             "font: bold 13px; color: black; border-radius: 4px}"
@@ -497,16 +542,14 @@ class MainWindow(QMainWindow):
         self.BtnBacklight.setStyleSheet(self._backlight_style_off)
         self.BtnBacklight.clicked.connect(self.BacklightToggle)
 
-        # Brightness Up: increases exposure compensation by one step
-        BtnBrighter = QPushButton('▲ Brighter', self)
+        BtnBrighter = QPushButton('\u25b2 Brighter', self)
         BtnBrighter.setGeometry(1750, 920, 110, 45)
-        BtnBrighter.setToolTip('Increase brightness')
+        BtnBrighter.setToolTip('Increase exposure compensation one step')
         BtnBrighter.setStyleSheet(_exp_style)
         BtnBrighter.clicked.connect(self.BrightnessUp)
 
         # ── Config / status buttons (bottom of right panel) ───────────────────
-        # Clicking these labels opens a dialog to change the IP or camera ID.
-        # Colour reflects whether the camera was reachable at startup.
+        # Green = camera was reachable at startup; Red = not reachable.
         Cam1Address = QPushButton('Platform [Platform]  -  ' + IPAddress, self)
         Cam1Address.setGeometry(1500, 975, 310, 22)
         Cam1Address.setStyleSheet("font: bold 15px; color:" + Cam1Check)
@@ -527,30 +570,87 @@ class MainWindow(QMainWindow):
         PTZ2ID.setStyleSheet("font: bold 15px; color:" + Cam2Check)
         PTZ2ID.clicked.connect(self.PTZ2IDchange)
 
-        # Close application
         Version = QPushButton('Close window', self)
         Version.setGeometry(1500, 1050, 310, 22)
-        Version.setStyleSheet(
-            "background-color: lightgrey; font: 15px; color: black; border: none"
-        )
+        Version.setStyleSheet("background-color: lightgrey; font: 15px; color: black; border: none")
         Version.clicked.connect(self.Quit)
 
-        # Help button: shows the Contact.txt contents
         Help = QPushButton('?', self)
         Help.setGeometry(1815, 1050, 45, 22)
-        Help.setStyleSheet(
-            "background-color: lightgrey; font: 15px; color: black; border: none"
-        )
+        Help.setStyleSheet("background-color: lightgrey; font: 15px; color: black; border: none")
         Help.clicked.connect(self.HelpMsg)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  UI Helpers
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
+    #  Speed helpers
+    # -------------------------------------------------------------------------
+
+    def _speed_label_text(self, value):
+        """
+        Build the human-readable string shown below the speed slider.
+
+        Shows the raw numeric value and a plain-English word so operators can
+        judge at a glance whether they are near the slow or fast end of the range.
+
+        Examples:
+            value=1  -> "Speed: 1  (minimum)"
+            value=8  -> "Speed: 8  (medium)"
+            value=18 -> "Speed: 18  (maximum)"
+        """
+        mid = (SPEED_MIN + SPEED_MAX) / 2
+        if value <= SPEED_MIN:
+            desc = "minimum"
+        elif value >= SPEED_MAX:
+            desc = "maximum"
+        elif value < mid - 2:
+            desc = "slow"
+        elif value > mid + 2:
+            desc = "fast"
+        else:
+            desc = "medium"
+        return f"Speed: {value}  ({desc})"
+
+    def _on_speed_changed(self, value):
+        """
+        Slot connected to SpeedSlider.valueChanged.
+        Updates the numeric readout label immediately as the slider handle moves.
+        """
+        self.SpeedValueLabel.setText(self._speed_label_text(value))
+
+    def _get_speed(self):
+        """
+        Return the current pan/tilt speed as an integer in [SPEED_MIN, SPEED_MAX].
+
+        This integer is inserted directly as both the pan-speed byte and the
+        tilt-speed byte inside VISCA Pan-Tilt Drive commands:
+            <id> 01 06 01 <pan_spd> <tilt_spd> <pan_dir> <tilt_dir> FF
+
+        When only one axis is moving, the stopped axis always sends 0x00 for
+        its speed byte; only the active axis uses this value.
+        """
+        return self.SpeedSlider.value()
+
+    def _get_zoom_speed(self):
+        """
+        Map the pan/tilt slider (SPEED_MIN to SPEED_MAX) to a zoom speed nibble
+        (1 to 7) via linear interpolation.
+
+        VISCA zoom commands encode direction and speed in one byte:
+            Zoom tele: <id> 01 04 07 2<spd> FF   (e.g. 0x22 = tele at speed 2)
+            Zoom wide: <id> 01 04 07 3<spd> FF   (e.g. 0x36 = wide at speed 6)
+        Speed nibble 0 means stop, so we clamp to a minimum of 1 to guarantee
+        visible movement whenever the operator presses a zoom button.
+        """
+        raw = round(self.SpeedSlider.value() * 7 / SPEED_MAX)
+        return max(1, min(7, raw))
+
+    # -------------------------------------------------------------------------
+    #  UI helpers
+    # -------------------------------------------------------------------------
 
     def _arrow_btn(self, x, y, degrees):
         """
-        Create a transparent push-button with a rotated arrow icon.
-        `degrees` rotates the base arrow image (angle.png) clockwise.
+        Create a 100x100 transparent push-button with a rotated arrow icon.
+        `degrees` rotates angle.png clockwise so all eight directions share one image.
         """
         btn = QPushButton(self)
         btn.setGeometry(x, y, 100, 100)
@@ -564,9 +664,9 @@ class MainWindow(QMainWindow):
 
     def _update_backlight_ui(self):
         """
-        Refresh the Backlight button's label and colour to match the
-        backlight state of whichever camera is currently selected.
-        Called whenever the camera-selection buttons are clicked.
+        Refresh the Backlight button's label and colour to reflect the backlight
+        state of whichever camera is currently selected.
+        Called whenever the Platform / Comments camera buttons are clicked.
         """
         cam_key = 1 if self.Cam1.isChecked() else 2
         if self.backlight_on[cam_key]:
@@ -576,54 +676,47 @@ class MainWindow(QMainWindow):
             self.BtnBacklight.setText('Backlight\nOFF')
             self.BtnBacklight.setStyleSheet(self._backlight_style_off)
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  Core VISCA send helper
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     def _send_cmd(self, ip, cam_id_hex, cmd_suffix):
         """
-        Open a TCP connection to the camera, send one VISCA command, read
-        the acknowledgement, and close the socket.
+        Open a TCP connection to a camera, send one VISCA command, read the
+        acknowledgement, and close the socket.
 
         Args:
-            ip          : Camera IP address string (e.g. "172.16.1.11")
-            cam_id_hex  : Camera VISCA device ID as a hex string (e.g. "81")
-            cmd_suffix  : Hex string for the command body after the device ID
-                          (e.g. "01040722ff" for Zoom Tele slow)
+            ip          : Camera IP address (e.g. "172.16.1.11")
+            cam_id_hex  : VISCA device ID as a hex string (e.g. "81")
+            cmd_suffix  : Hex string for the command body that follows the ID
+                          (e.g. "01040722ff" for Zoom Tele at speed 2)
 
         Returns:
-            True  on success
-            False on any network or OS error (caller may choose to alert user)
+            True on success, False on any network / OS error.
+
+        Note:
+            The socket is always closed via the `with` context manager, even if
+            an exception occurs, preventing file-descriptor leaks.
         """
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(SOCKET_TIMEOUT)
                 s.connect((ip, 5678))
-                cmd = binascii.unhexlify(cam_id_hex + cmd_suffix)
-                s.send(cmd)
-                s.recv(131072)   # Read and discard the VISCA ACK/completion
+                s.send(binascii.unhexlify(cam_id_hex + cmd_suffix))
+                s.recv(131072)   # Read and discard the VISCA ACK / completion reply
             return True
         except (socket.timeout, socket.error, OSError):
             return False
 
     def _active_cam(self):
-        """
-        Return (ip, cam_id) for whichever camera is currently selected
-        in the Camera Selection panel.
-        """
+        """Return (ip, cam_id) for whichever camera is currently selected."""
         if self.Cam1.isChecked():
             return IPAddress, Cam1ID
         return IPAddress2, Cam2ID
 
-    def _is_slow(self):
-        """Return True if the SLOW speed button is checked."""
-        return self.SpeedSlow.isChecked()
-
-    # ─────────────────────────────────────────────────────────────────────────
-    #   ErrorCapture() shows a generic
-    #  warning so the operator knows something went wrong; ErrorCapture1/2
-    #  continue to show camera-specific messages with the expected IP address.
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
+    #  Error dialogs
+    # -------------------------------------------------------------------------
 
     def ErrorCapture(self):
         QMessageBox.warning(self, 'Camera Control Error',
@@ -631,83 +724,60 @@ class MainWindow(QMainWindow):
 
     def ErrorCapture1(self):
         QMessageBox.warning(self, 'Platform PTZ Control',
-                            f'Check that the Platform Camera IP Address is set to '
-                            f'"{IPAddress}" and ID 1.')
+                            f'Check that the Platform Camera IP is "{IPAddress}" and ID 1.')
 
     def ErrorCapture2(self):
         QMessageBox.warning(self, 'Comments PTZ Control',
-                            f'Check that the Comments Camera IP Address is set to '
-                            f'"{IPAddress2}" and ID 2.')
+                            f'Check that the Comments Camera IP is "{IPAddress2}" and ID 2.')
 
-    # Individual camera send helpers — used by legacy call paths that need
-    # camera-specific error dialogs rather than the generic one.
-    def Cam1Call(self):
-        if not self._send_cmd(IPAddress, Cam1ID, "01060100000303FF"):
-            self.ErrorCapture1()
+    # Thin stop helpers retained for any future callers; they delegate to _send_cmd.
+    def Cam1Stop(self): self._send_cmd(IPAddress,  Cam1ID, "01060100000303FF")
+    def Cam2Stop(self): self._send_cmd(IPAddress2, Cam2ID, "01060100000303FF")
 
-    def Cam1aCall(self):
-        if not self._send_cmd(IPAddress, Cam1ID, "01060100000303FF"):
-            self.ErrorCapture1()
-
-    def Cam2Call(self):
-        if not self._send_cmd(IPAddress2, Cam2ID, "01060100000303FF"):
-            self.ErrorCapture2()
-
-    def Cam2aCall(self):
-        if not self._send_cmd(IPAddress2, Cam2ID, "01060100000303FF"):
-            self.ErrorCapture2()
-
-    def Cam1Stop(self):
-        # VISCA stop: <id>01060100000303FF
-        self._send_cmd(IPAddress, Cam1ID, "01060100000303FF")
-
-    def Cam2Stop(self):
-        self._send_cmd(IPAddress2, Cam2ID, "01060100000303FF")
-
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  SESSION MANAGEMENT
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     def ToggleSession(self):
-        """Start or end a broadcast session.
+        """
+        Toggle the broadcast session ON or OFF.
 
-        Starting: powers both cameras ON, disables the button while cameras warm
-        up (8 s), then moves both to Home and re-enables the button in green.
+        ON path:
+          1. Sets the flag, disables the button to prevent double-clicks.
+          2. Sends VISCA Power-ON to both cameras.
+          3. After 8 seconds (QTimer) moves both cameras to Home and re-enables.
 
-        Ending: asks for confirmation, sends standby to both cameras, resets UI."""
+        OFF path:
+          1. Asks for confirmation.
+          2. Sends VISCA Standby to both cameras.
+          3. Resets the button to its red / OFF appearance.
+        """
         if not self.session_active:
-            # ── START session ────────────────────────────────────────────────
             self.session_active = True
-
-            # Disable the button while cameras power up to prevent double-clicks
             self.BtnSession.setEnabled(False)
             self.BtnSession.setStyleSheet(
                 "QPushButton{background-color: #555; border: 2px solid #333; "
                 "font: bold 26px; color: #aaa; border-radius: 25px}"
             )
-            self.SessionStatus.setText('Starting…')
+            self.SessionStatus.setText('Starting...')
             self.SessionStatus.setStyleSheet("font: bold 12px; color: #888")
-
-            # VISCA power ON: <id>01040002FF
+            # VISCA Power ON: <id> 01 04 00 02 FF
             self._send_cmd(IPAddress,  Cam1ID, "01040002FF")
             self._send_cmd(IPAddress2, Cam2ID, "01040002FF")
-
-            # After 8 seconds both cameras should be ready to accept commands
+            # Non-blocking 8-second wait; UI remains responsive during warm-up
             QtCore.QTimer.singleShot(8000, self._session_home)
 
         else:
-            # ── END session ──────────────────────────────────────────────────
             reply = QMessageBox.question(
                 self, 'End Session',
                 'Power off both cameras and end the session?',
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if reply == QMessageBox.Yes:
-                # VISCA standby: <id>01040003FF
+                # VISCA Standby: <id> 01 04 00 03 FF
                 self._send_cmd(IPAddress,  Cam1ID, "01040003FF")
                 self._send_cmd(IPAddress2, Cam2ID, "01040003FF")
                 self.session_active = False
-                # Reset button to red / OFF state
                 self.BtnSession.setStyleSheet(
                     "QPushButton{background-color: #8b1a1a; border: 2px solid #5a0d0d; "
                     "font: bold 26px; color: white; border-radius: 25px}"
@@ -716,17 +786,15 @@ class MainWindow(QMainWindow):
                 self.BtnSession.setToolTip('Start Session: Power ON both cameras and go Home')
                 self.SessionStatus.setText('OFF')
                 self.SessionStatus.setStyleSheet("font: bold 12px; color: #8b1a1a")
-            # If the operator chose "No", nothing changes — button stays green/enabled.
 
     def _session_home(self):
         """
-        Called 8 seconds after session start (via QTimer).
-        Sends both cameras to their Home position and marks the session as fully ON.
-        VISCA Home: <id>010604FF
+        Called 8 seconds after session start (via QTimer.singleShot).
+        Sends both cameras to their Home position and marks the session fully ON.
+        VISCA Home: <id> 01 06 04 FF
         """
         self._send_cmd(IPAddress,  Cam1ID, "010604FF")
         self._send_cmd(IPAddress2, Cam2ID, "010604FF")
-        # Update button to green / ON state
         self.BtnSession.setStyleSheet(
             "QPushButton{background-color: #1a7a1a; border: 2px solid #0d4d0d; "
             "font: bold 26px; color: white; border-radius: 25px}"
@@ -737,150 +805,190 @@ class MainWindow(QMainWindow):
         self.SessionStatus.setText('ON')
         self.SessionStatus.setStyleSheet("font: bold 12px; color: #1a7a1a")
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  FOCUS CONTROLS
-    #  VISCA focus mode commands sent to whichever camera is active.
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     def AutoFocus(self):
-        """Enable continuous autofocus"""
+        """Enable continuous autofocus.  VISCA: <id> 01 04 38 02 FF"""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01043802FF")
 
     def ManualFocus(self):
-        """Switch to manual focus mode"""
+        """Lock to manual focus mode.  VISCA: <id> 01 04 38 03 FF"""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01043803FF")
 
     def OnePushAF(self):
-        """Trigger one autofocus cycle, then return to manual"""
+        """Trigger one AF cycle then stay in manual.  VISCA: <id> 01 04 18 01 FF"""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01041801FF")
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  EXPOSURE CONTROLS
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     def BrightnessUp(self):
-        """Increase exposure compensation by one step. VISCA: <id>01040D02FF"""
+        """Increase exposure compensation one step.  VISCA: <id> 01 04 0D 02 FF"""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01040D02FF")
 
     def BrightnessDown(self):
-        """Decrease exposure compensation by one step. VISCA: <id>01040D03FF"""
+        """Decrease exposure compensation one step.  VISCA: <id> 01 04 0D 03 FF"""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01040D03FF")
 
     def BacklightToggle(self):
         """
-        Toggle backlight compensation (contraluz) for the active camera.
-        Backlight ON  → VISCA: <id>01043302FF
-        Backlight OFF → VISCA: <id>01043303FF
-        State is tracked per camera so switching cameras shows the correct status.
+        Toggle backlight compensation for the active camera.
+          Backlight ON  -> VISCA: <id> 01 04 33 02 FF
+          Backlight OFF -> VISCA: <id> 01 04 33 03 FF
+        State is tracked independently per camera in self.backlight_on.
         """
         ip, cam_id = self._active_cam()
         cam_key = 1 if self.Cam1.isChecked() else 2
         if self.backlight_on[cam_key]:
-            self._send_cmd(ip, cam_id, "01043303FF")   # Turn backlight OFF
+            self._send_cmd(ip, cam_id, "01043303FF")   # Turn OFF
             self.backlight_on[cam_key] = False
         else:
-            self._send_cmd(ip, cam_id, "01043302FF")   # Turn backlight ON
+            self._send_cmd(ip, cam_id, "01043302FF")   # Turn ON
             self.backlight_on[cam_key] = True
         self._update_backlight_ui()
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  CAMERA MOVEMENT
-    #  All movement methods:
-    #    pressed  → send a continuous-move VISCA command
-    #    released → send Stop (via Stop / ZoomStop)
-    #  Speed byte differs between SLOW (0x04 pan / 0x04 tilt) and
-    #  FAST (0x10 pan / 0x10 tilt).
-    # ─────────────────────────────────────────────────────────────────────────
+    #
+    #  All methods build the VISCA command dynamically using the speed value
+    #  read from the slider at the moment the button is pressed, so the full
+    #  continuous range is available without any binary switching logic.
+    #
+    #  VISCA Pan-Tilt Drive format:
+    #      <id> 01 06 01 <pan_spd> <tilt_spd> <pan_dir> <tilt_dir> FF
+    #
+    #  Direction nibbles:
+    #      Pan:  01 = left   02 = right   03 = stop
+    #      Tilt: 01 = up     02 = down    03 = stop
+    #
+    #  For single-axis moves the idle axis gets speed byte 0x00 (the camera
+    #  ignores the speed for a stopped axis, but explicit zero is cleaner).
+    # -------------------------------------------------------------------------
 
     def HomeButton(self):
+        """Move camera to its factory Home position.  VISCA: <id> 01 06 04 FF"""
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "010604FF")
 
-    def UpLeft(self):
-        ip, cam_id = self._active_cam()
-        suffix = "01060104040101ff" if self._is_slow() else "01060110100101ff"
-        self._send_cmd(ip, cam_id, suffix)
-
     def Up(self):
+        """Tilt up.  pan_spd=00, tilt_spd=slider, pan_dir=stop(03), tilt_dir=up(01)"""
         ip, cam_id = self._active_cam()
-        suffix = "01060100040301FF" if self._is_slow() else "01060100100301FF"
-        self._send_cmd(ip, cam_id, suffix)
-
-    def UpRight(self):
-        ip, cam_id = self._active_cam()
-        suffix = "01060104040201ff" if self._is_slow() else "01060110100201ff"
-        self._send_cmd(ip, cam_id, suffix)
-
-    def Left(self):
-        ip, cam_id = self._active_cam()
-        suffix = "01060104000103ff" if self._is_slow() else "01060110000103ff"
-        self._send_cmd(ip, cam_id, suffix)
-
-    def Right(self):
-        ip, cam_id = self._active_cam()
-        suffix = "01060104000203ff" if self._is_slow() else "01060110000203ff"
-        self._send_cmd(ip, cam_id, suffix)
-
-    def DownLeft(self):
-        ip, cam_id = self._active_cam()
-        suffix = "01060104040102ff" if self._is_slow() else "01060110100102ff"
-        self._send_cmd(ip, cam_id, suffix)
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"01060100{spd:02X}0301FF")
 
     def Down(self):
+        """Tilt down.  pan_spd=00, tilt_spd=slider, pan_dir=stop(03), tilt_dir=down(02)"""
         ip, cam_id = self._active_cam()
-        suffix = "01060100040302ff" if self._is_slow() else "01060100100302ff"
-        self._send_cmd(ip, cam_id, suffix)
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"01060100{spd:02X}0302FF")
+
+    def Left(self):
+        """Pan left.  pan_spd=slider, tilt_spd=00, pan_dir=left(01), tilt_dir=stop(03)"""
+        ip, cam_id = self._active_cam()
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"010601{spd:02X}000103FF")
+
+    def Right(self):
+        """Pan right.  pan_spd=slider, tilt_spd=00, pan_dir=right(02), tilt_dir=stop(03)"""
+        ip, cam_id = self._active_cam()
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"010601{spd:02X}000203FF")
+
+    def UpLeft(self):
+        """Diagonal up-left.  Both axes move simultaneously at the current speed."""
+        ip, cam_id = self._active_cam()
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0101FF")
+
+    def UpRight(self):
+        """Diagonal up-right.  Both axes at current speed."""
+        ip, cam_id = self._active_cam()
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0201FF")
+
+    def DownLeft(self):
+        """Diagonal down-left.  Both axes at current speed."""
+        ip, cam_id = self._active_cam()
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0102FF")
 
     def DownRight(self):
+        """Diagonal down-right.  Both axes at current speed."""
         ip, cam_id = self._active_cam()
-        suffix = "01060104040202ff" if self._is_slow() else "01060110100202ff"
-        self._send_cmd(ip, cam_id, suffix)
+        spd = self._get_speed()
+        self._send_cmd(ip, cam_id, f"010601{spd:02X}{spd:02X}0202FF")
 
     def Stop(self):
+        """
+        Stop all pan/tilt movement (sent on button release).
+        Speed bytes are 0x00; direction bytes are stop (0x03) for both axes.
+        VISCA: <id> 01 06 01 00 00 03 03 FF
+        """
         ip, cam_id = self._active_cam()
         self._send_cmd(ip, cam_id, "01060100000303FF")
 
+    # -- Zoom -----------------------------------------------------------------
+    #
+    #  VISCA Zoom format:  <id> 01 04 07 <zoom_byte> FF
+    #    zoom_byte = 0x2<spd>  tele (zoom in),  e.g. 0x22 = tele at speed 2
+    #    zoom_byte = 0x3<spd>  wide (zoom out), e.g. 0x36 = wide at speed 6
+    #    zoom_byte = 0x00      stop
+    #
+    #  Zoom speed nibble (1-7) is derived from the slider via _get_zoom_speed().
+
     def ZoomIn(self):
+        """
+        Start zooming in (tele) at a speed proportional to the slider.
+        zoom_byte = 0x20 | zoom_speed   e.g. speed 3 -> byte 0x23
+        """
         ip, cam_id = self._active_cam()
-        suffix = "01040722ff" if self._is_slow() else "01040726ff"
-        self._send_cmd(ip, cam_id, suffix)
+        zspd = self._get_zoom_speed()
+        self._send_cmd(ip, cam_id, f"010407{0x20 | zspd:02X}FF")
 
     def ZoomOut(self):
+        """
+        Start zooming out (wide) at a speed proportional to the slider.
+        zoom_byte = 0x30 | zoom_speed   e.g. speed 3 -> byte 0x33
+        """
         ip, cam_id = self._active_cam()
-        suffix = "01040732ff" if self._is_slow() else "01040736ff"
-        self._send_cmd(ip, cam_id, suffix)
+        zspd = self._get_zoom_speed()
+        self._send_cmd(ip, cam_id, f"010407{0x30 | zspd:02X}FF")
 
     def ZoomStop(self):
+        """Stop zoom movement.  VISCA: <id> 01 04 07 00 FF"""
         ip, cam_id = self._active_cam()
-        self._send_cmd(ip, cam_id, "01040700ff")
+        self._send_cmd(ip, cam_id, "01040700FF")
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  PRESET HANDLERS — Platform positions (Camera 1 only, presets 1-3)
     #
-    #  NOTE: Go1/Go2/Go3 always target Camera 1 regardless of the Camera
-    #  Selection panel.  These are physical platform positions (Chairman,
-    #  Left, Right) that are only meaningful for the platform-facing camera.
-    # ─────────────────────────────────────────────────────────────────────────
+    #  Go1/Go2/Go3 always target Camera 1 regardless of the Camera Selection
+    #  panel, because Chairman / Left / Right are physical platform positions
+    #  that are only meaningful for the platform-facing camera.
+    # -------------------------------------------------------------------------
 
     def Go1(self):
-        """Chairman preset (Camera 1 preset #1). Call or Set depending on mode."""
+        """Chairman preset — Camera 1 preset slot #1.  Call or Set by mode."""
         if self.Set1.isChecked():
-            # Call preset 1 → VISCA: 81 01 04 3F 02 01 FF
+            # VISCA Recall preset 1: <id> 01 04 3F 02 01 FF
             self._send_cmd(IPAddress, Cam1ID, "01043f0201ff")
         elif self.Set2.isChecked():
             reply = QMessageBox.question(self, 'Record Chairman Position', "Are You Sure?",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
-                # Set preset 1 → VISCA: 81 01 04 3F 01 01 FF
+                # VISCA Set preset 1: <id> 01 04 3F 01 01 FF
                 self._send_cmd(IPAddress, Cam1ID, "01043f0101ff")
 
     def Go2(self):
-        """Platform Left preset (Camera 1 preset #2). Call or Set depending on mode."""
+        """Platform Left preset — Camera 1 preset slot #2."""
         if self.Set1.isChecked():
             self._send_cmd(IPAddress, Cam1ID, "01043f0202ff")
         elif self.Set2.isChecked():
@@ -890,7 +998,7 @@ class MainWindow(QMainWindow):
                 self._send_cmd(IPAddress, Cam1ID, "01043f0102ff")
 
     def Go3(self):
-        """Platform Right preset (Camera 1 preset #3). Call or Set depending on mode."""
+        """Platform Right preset — Camera 1 preset slot #3."""
         if self.Set1.isChecked():
             self._send_cmd(IPAddress, Cam1ID, "01043f0203ff")
         elif self.Set2.isChecked():
@@ -899,33 +1007,32 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.Yes:
                 self._send_cmd(IPAddress, Cam1ID, "01043f0103ff")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  PRESET HANDLER — Seat buttons (presets 4-128, respects camera selection)
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
+    #  PRESET HANDLER — Seat buttons (presets 4-128, active camera)
+    # -------------------------------------------------------------------------
 
     def go_to_preset(self, preset_number):
         """
         Call or set a seat preset on the currently active camera.
 
-        Call mode: moves camera to the stored position for `preset_number`.
-        Set mode:  overwrites that preset with the camera's current position
-                   (asks for confirmation first).
+        Call mode (Set1 checked):
+            Moves the camera to the position stored in that preset slot.
+            VISCA Recall: <id> 01 04 3F 02 <preset_hex> FF
 
-        VISCA Call: <id> 01 04 3F 02 <preset_hex> FF
-        VISCA Set:  <id> 01 04 3F 01 <preset_hex> FF
+        Set mode (Set2 checked):
+            Overwrites the preset slot with the camera's current position.
+            A confirmation dialog prevents accidental overwrites.
+            VISCA Set:    <id> 01 04 3F 01 <preset_hex> FF
         """
         preset_hex = PRESET_MAP.get(preset_number)
         if not preset_hex:
-            return   # Preset number not in map — should not happen
+            return   # Should never happen; preset_number always comes from seat_positions
 
         ip, cam_id = self._active_cam()
 
         if self.Set1.isChecked():
-            # Call (recall) the preset
             self._send_cmd(ip, cam_id, "01043f02" + preset_hex + "ff")
-
         elif self.Set2.isChecked():
-            # Set (record) the preset — confirm to avoid accidental overwrites
             cam_name = "Platform" if self.Cam1.isChecked() else "Comments"
             reply = QMessageBox.question(
                 self, f'Record Preset {preset_number} ({cam_name})',
@@ -935,15 +1042,15 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.Yes:
                 self._send_cmd(ip, cam_id, "01043f01" + preset_hex + "ff")
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  CONFIG DIALOGS — change IP address or VISCA ID at runtime
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
+    #  CONFIG DIALOGS — change IP / VISCA ID at runtime without editing files
+    # -------------------------------------------------------------------------
 
     def PTZ1Address(self):
-        """ Let the operator change Camera 1's IP address."""
+        """Let the operator change Camera 1's IP address.  Saves to PTZ1IP.txt and restarts."""
         result = QMessageBox.warning(
             self, 'Platform PTZ Control',
-            'Do you want to change the IP address used to control the Platform camera?',
+            'Do you want to change the IP address for the Platform camera?',
             QMessageBox.Ok, QMessageBox.Cancel
         )
         if result == QMessageBox.Ok:
@@ -956,19 +1063,17 @@ class MainWindow(QMainWindow):
                 if not _is_valid_ip(text):
                     QMessageBox.warning(self, 'Invalid IP Address',
                                         f'"{text}" is not a valid IPv4 address.\n'
-                                        'Please enter four numbers separated by dots '
-                                        '(e.g. 172.16.1.11).')
+                                        'Enter four numbers 0-255 separated by dots.')
                     return
                 with open("PTZ1IP.txt", "w") as f:
                     f.write(text.strip())
-                # Restart the app to reload all config and re-check connectivity
                 os.execv(sys.executable, ['python3'] + sys.argv)
 
     def PTZ2Address(self):
-        """Let the operator change Camera 2's IP address."""
+        """Let the operator change Camera 2's IP address.  Saves to PTZ2IP.txt and restarts."""
         result = QMessageBox.warning(
             self, 'Comments PTZ Control',
-            'Do you want to change the IP address used to control the Comments camera?',
+            'Do you want to change the IP address for the Comments camera?',
             QMessageBox.Ok, QMessageBox.Cancel
         )
         if result == QMessageBox.Ok:
@@ -980,22 +1085,22 @@ class MainWindow(QMainWindow):
             if ok and text:
                 if not _is_valid_ip(text):
                     QMessageBox.warning(self, 'Invalid IP Address',
-                                        f'"{text}" is not a valid IPv4 address.\n'
-                                        'Please enter four numbers separated by dots '
-                                        '(e.g. 172.16.1.12).')
+                                        f'"{text}" is not a valid IPv4 address.')
                     return
                 with open("PTZ2IP.txt", "w") as f:
                     f.write(text.strip())
                 os.execv(sys.executable, ['python3'] + sys.argv)
 
     def PTZ1IDchange(self):
-        """ Let the operator change Camera 1's VISCA device ID.
-        FIX 4 — Previously any text was saved without checking whether it was
-        valid hex.  An invalid ID causes binascii.Error at next startup when
-        VISCA commands are assembled.  We now validate with _is_valid_cam_id()."""
+        """
+        Let the operator change Camera 1's VISCA device ID.
+        Validates that the entered value is a legal hex string before saving,
+        because an invalid ID would cause binascii.Error when assembling commands.
+        Saves to Cam1ID.txt and restarts.
+        """
         result = QMessageBox.warning(
             self, 'Platform PTZ Control',
-            'Do you want to change the VISCA ID used to control the Platform camera?',
+            'Do you want to change the VISCA ID for the Platform camera?',
             QMessageBox.Ok, QMessageBox.Cancel
         )
         if result == QMessageBox.Ok:
@@ -1007,20 +1112,17 @@ class MainWindow(QMainWindow):
             if ok and text:
                 if not _is_valid_cam_id(text):
                     QMessageBox.warning(self, 'Invalid Camera ID',
-                                        f'"{text}" is not a valid hexadecimal ID.\n'
-                                        'Please enter a hex value such as "81" or "82".')
+                                        f'"{text}" is not valid hex (e.g. "81" or "82").')
                     return
                 with open("Cam1ID.txt", "w") as f:
                     f.write(text.strip())
                 os.execv(sys.executable, ['python3'] + sys.argv)
 
     def PTZ2IDchange(self):
-    
-        """Let the operator change Camera 2's VISCA device ID."""
-
+        """Let the operator change Camera 2's VISCA device ID.  Saves to Cam2ID.txt and restarts."""
         result = QMessageBox.warning(
             self, 'Comments PTZ Control',
-            'Do you want to change the VISCA ID used to control the Comments camera?',
+            'Do you want to change the VISCA ID for the Comments camera?',
             QMessageBox.Ok, QMessageBox.Cancel
         )
         if result == QMessageBox.Ok:
@@ -1032,8 +1134,7 @@ class MainWindow(QMainWindow):
             if ok and text:
                 if not _is_valid_cam_id(text):
                     QMessageBox.warning(self, 'Invalid Camera ID',
-                                        f'"{text}" is not a valid hexadecimal ID.\n'
-                                        'Please enter a hex value such as "81" or "82".')
+                                        f'"{text}" is not valid hex (e.g. "81" or "82").')
                     return
                 with open("Cam2ID.txt", "w") as f:
                     f.write(text.strip())
@@ -1044,18 +1145,18 @@ class MainWindow(QMainWindow):
         sys.exit()
 
     def HelpMsg(self):
-        """Display the technical support contact from Contact.txt."""
+        """Display the technical support contact loaded from Contact.txt."""
         QMessageBox.information(self, 'For Technical Assistance', Contact, QMessageBox.Ok)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-#  GoButton — small numbered seat button used across the seating plan
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+#  GoButton -- compact numbered seat button
+# =============================================================================
 
 class GoButton(QPushButton):
     """
-    A small (35×35 px) transparent push-button used for seat preset numbers
-    and the platform Left/Right labels.
+    A small (35x35 px) semi-transparent push-button used for seat preset numbers
+    on the seating plan and for the platform Left/Right labels.
     """
 
     def __init__(self, text, parent=None):
@@ -1071,15 +1172,14 @@ class GoButton(QPushButton):
         )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  Entry point
-# ═════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    # Uncomment the line below (and comment out show()) to run full-screen
-    # on the production Raspberry Pi touchscreen:
+    # Uncomment for production Raspberry Pi touchscreen:
     # window.showFullScreen()
     sys.exit(app.exec_())
