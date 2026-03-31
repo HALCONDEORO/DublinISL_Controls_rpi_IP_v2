@@ -23,7 +23,7 @@
 #    Cam1ID.txt   VISCA hex device ID for Camera 1   (e.g. "81")
 #    Cam2ID.txt   VISCA hex device ID for Camera 2   (e.g. "82")
 #    Contact.txt  Support contact shown in Help dialog
-#
+# prueba
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
