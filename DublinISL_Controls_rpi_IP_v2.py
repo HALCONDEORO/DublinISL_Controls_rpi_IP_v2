@@ -228,56 +228,6 @@ class MainWindow(QMainWindow):
         background.setGeometry(0, -30, 1920, 1080)
         background.lower()   # Push behind every other widget
 
-        # ── Seat pixel positions ──────────────────────────────────────────────
-        # Maps preset number → (x, y) top-left corner of the button on screen.
-        # Numbers match the physical seat numbers printed on the background image.
-        seat_positions = {
-            # Row 1
-            4:(70,210),   5:(131,210),  6:(192,210),  7:(253,210),
-            8:(479,210),  9:(540,210), 10:(601,210), 11:(662,210),
-           12:(722,210), 13:(783,210), 14:(844,210),
-           15:(1070,210),16:(1130,210),17:(1191,210),18:(1252,210),
-            # Row 2
-           19:(70,295),  20:(131,295), 21:(192,295), 22:(253,295),
-           23:(479,295), 24:(540,295), 25:(601,295), 26:(662,295),
-           27:(722,295), 28:(783,295), 29:(844,295),
-           30:(1070,295),31:(1130,295),32:(1191,295),33:(1252,295),
-            # Row 3
-           34:(70,382),  35:(131,382), 36:(192,382), 37:(253,382),
-           38:(479,382), 39:(540,382), 40:(601,382), 41:(662,382),
-           42:(723,382), 43:(783,382), 44:(844,382),
-           45:(1070,382),46:(1130,382),47:(1191,382),48:(1252,382),
-            # Row 4
-           49:(70,465),  50:(131,465), 51:(192,465), 52:(253,465),
-           53:(479,465), 54:(540,465), 55:(601,465), 56:(662,465),
-           57:(722,465), 58:(783,465), 59:(844,465),
-           60:(1070,465),61:(1130,465),62:(1191,465),63:(1252,465),
-            # Row 5
-           64:(70,550),  65:(131,550), 66:(192,550), 67:(253,550),
-           68:(479,550), 69:(540,550), 70:(601,550), 71:(662,550),
-           72:(722,550), 73:(783,550), 74:(844,550),
-           75:(1070,550),76:(1130,550),77:(1191,550),78:(1252,550),
-            # Row 6
-           79:(70,635),  80:(131,635), 81:(192,635), 82:(253,635),
-           83:(479,635), 84:(540,635), 85:(601,635), 86:(662,635),
-           87:(722,635), 88:(783,635), 89:(844,635),
-           90:(1070,635),91:(1130,635),92:(1191,635),93:(1252,635),
-            # Row 7
-           94:(70,720),  95:(131,720), 96:(192,720), 97:(253,720),
-           98:(479,720), 99:(540,720),100:(601,720),101:(662,720),
-          102:(722,720),103:(783,720),104:(844,720),
-          105:(1070,720),106:(1130,720),107:(1191,720),108:(1252,720),
-            # Row 8
-          109:(70,805), 110:(131,805),111:(192,805),112:(253,805),
-          113:(479,805),114:(540,805),115:(601,805),116:(662,805),
-          117:(722,805),118:(783,805),119:(844,805),
-          120:(1070,805),121:(1130,805),122:(1191,805),123:(1252,805),
-            # Row 9
-          124:(108,975),125:(201,975),126:(481,975),127:(578,975),
-            # Wheelchair space
-          128:(150,110),
-        }
-
         # ── Platform preset buttons (fixed positions above seating plan) ───────
         # These three call hardcoded presets on Camera 1 (platform camera only).
         Preset1 = GoButton('Chairman', self)
@@ -307,14 +257,11 @@ class MainWindow(QMainWindow):
         )
         Preset3.clicked.connect(self.Go3)
 
-        # ── Seat buttons (dynamic, one per entry in seat_positions) ───────────
+        # ── Seat buttons (dynamic, one per entry in SEAT_POSITIONS) ──────────
         # Each button calls go_to_preset(n) with the seat's preset number.
         # We use a default-argument trick (n=seat_number) to capture the loop
         # variable correctly inside the lambda.
-        for seat_number in range(4, 129):
-            if seat_number not in seat_positions:
-                continue
-            x, y = seat_positions[seat_number]
+        for seat_number, (x, y) in SEAT_POSITIONS.items():
             button = GoButton(str(seat_number), self)
             button.move(x, y)
             button.clicked.connect(
@@ -347,7 +294,8 @@ class MainWindow(QMainWindow):
         # ── RIGHT PANEL — Camera Selection ────────────────────────────────────
         # Exclusive checkable buttons; only one can be active at a time.
         # Platform = Camera 1; Comments = Camera 2.
-        _cam_style = (
+        # Shared style for all toggle-button pairs (Camera, Speed, Preset mode).
+        _toggle_style = (
             "QPushButton{background-color: white; border: 3px solid green; "
             "font: bold 20px; color: black}"
             "QPushButton:Checked{background-color: green; font: bold 20px; color: white}"
@@ -359,14 +307,14 @@ class MainWindow(QMainWindow):
         self.Cam1.setAutoExclusive(True)
         self.Cam1.setChecked(True)    # Platform camera selected by default
         self.Cam1.setToolTip('Select Platform Camera')
-        self.Cam1.setStyleSheet(_cam_style)
+        self.Cam1.setStyleSheet(_toggle_style)
 
         self.Cam2 = QPushButton('Comments', self)
         self.Cam2.setGeometry(1680, 60, 180, 70)
         self.Cam2.setCheckable(True)
         self.Cam2.setAutoExclusive(True)
         self.Cam2.setToolTip('Select Comments Camera')
-        self.Cam2.setStyleSheet(_cam_style)
+        self.Cam2.setStyleSheet(_toggle_style)
 
         # Group ensures mutual exclusivity at the Qt level as well
         Camgroup = QButtonGroup(self)
@@ -380,26 +328,20 @@ class MainWindow(QMainWindow):
 
         # ── RIGHT PANEL — PTZ Speed ───────────────────────────────────────────
         # SLOW and FAST produce different VISCA speed bytes in movement commands.
-        _speed_style = (
-            "QPushButton{background-color: white; border: 3px solid green; "
-            "font: bold 20px; color: black}"
-            "QPushButton:Checked{background-color: green; font: bold 20px; color: white}"
-        )
-
         self.SpeedSlow = QPushButton('SLOW', self)
         self.SpeedSlow.setGeometry(1500, 175, 180, 70)
         self.SpeedSlow.setCheckable(True)
         self.SpeedSlow.setAutoExclusive(True)
         self.SpeedSlow.setChecked(True)
         self.SpeedSlow.setToolTip('Set Camera PTZ Speed to SLOW')
-        self.SpeedSlow.setStyleSheet(_speed_style)
+        self.SpeedSlow.setStyleSheet(_toggle_style)
 
         self.SpeedFast = QPushButton('FAST', self)
         self.SpeedFast.setGeometry(1680, 175, 180, 70)
         self.SpeedFast.setCheckable(True)
         self.SpeedFast.setAutoExclusive(True)
         self.SpeedFast.setToolTip('Set Camera PTZ Speed to FAST')
-        self.SpeedFast.setStyleSheet(_speed_style)
+        self.SpeedFast.setStyleSheet(_toggle_style)
 
         Speedgroup = QButtonGroup(self)
         Speedgroup.addButton(self.SpeedSlow)
@@ -421,26 +363,20 @@ class MainWindow(QMainWindow):
         # ── RIGHT PANEL — Preset mode (Call / Set) ───────────────────────────
         # "Call" = recall a stored preset position.
         # "Set"  = overwrite a preset with the camera's current position.
-        _preset_style = (
-            "QPushButton{background-color: white; border: 3px solid green; "
-            "font: bold 20px; color: black}"
-            "QPushButton:Checked{background-color: green; font: bold 20px; color: white}"
-        )
-
         self.Set1 = QPushButton('Call', self)
         self.Set1.setGeometry(1500, 290, 180, 70)
         self.Set1.setCheckable(True)
         self.Set1.setAutoExclusive(True)
         self.Set1.setChecked(True)
         self.Set1.setToolTip('Select Preset')
-        self.Set1.setStyleSheet(_preset_style)
+        self.Set1.setStyleSheet(_toggle_style)
 
         self.Set2 = QPushButton('Set', self)
         self.Set2.setGeometry(1680, 290, 180, 70)
         self.Set2.setCheckable(True)
         self.Set2.setAutoExclusive(True)
         self.Set2.setToolTip('Record Preset')
-        self.Set2.setStyleSheet(_preset_style)
+        self.Set2.setStyleSheet(_toggle_style)
 
         Setgroup = QButtonGroup(self)
         Setgroup.addButton(self.Set1)
@@ -484,7 +420,7 @@ class MainWindow(QMainWindow):
         FocusExposureLabel.setAlignment(QtCore.Qt.AlignCenter)
         FocusExposureLabel.setStyleSheet("font: bold 16px; color: black")
 
-        _focus_style = (
+        _btn_style = (
             "QPushButton{background-color: white; border: 2px solid #555; "
             "font: bold 13px; color: black; border-radius: 4px}"
             "QPushButton:pressed{background-color: #ccc}"
@@ -494,34 +430,28 @@ class MainWindow(QMainWindow):
         BtnAutoFocus = QPushButton('Auto\nFocus', self)
         BtnAutoFocus.setGeometry(1500, 863, 110, 50)
         BtnAutoFocus.setToolTip('Auto Focus ON')
-        BtnAutoFocus.setStyleSheet(_focus_style)
+        BtnAutoFocus.setStyleSheet(_btn_style)
         BtnAutoFocus.clicked.connect(self.AutoFocus)
 
         # One Push AF: camera focuses once then returns to manual mode
         BtnOnePush = QPushButton('One Push\nAF', self)
         BtnOnePush.setGeometry(1625, 863, 110, 50)
         BtnOnePush.setToolTip('One-shot autofocus then return to manual')
-        BtnOnePush.setStyleSheet(_focus_style)
+        BtnOnePush.setStyleSheet(_btn_style)
         BtnOnePush.clicked.connect(self.OnePushAF)
 
         # Manual Focus: locks focus, operator adjusts via camera menu
         BtnManualFocus = QPushButton('Manual\nFocus', self)
         BtnManualFocus.setGeometry(1750, 863, 110, 50)
         BtnManualFocus.setToolTip('Manual Focus mode')
-        BtnManualFocus.setStyleSheet(_focus_style)
+        BtnManualFocus.setStyleSheet(_btn_style)
         BtnManualFocus.clicked.connect(self.ManualFocus)
-
-        _exp_style = (
-            "QPushButton{background-color: white; border: 2px solid #555; "
-            "font: bold 13px; color: black; border-radius: 4px}"
-            "QPushButton:pressed{background-color: #ccc}"
-        )
 
         # Brightness Down: decreases exposure compensation by one step
         BtnDarker = QPushButton('▼ Darker', self)
         BtnDarker.setGeometry(1500, 920, 110, 45)
         BtnDarker.setToolTip('Decrease brightness')
-        BtnDarker.setStyleSheet(_exp_style)
+        BtnDarker.setStyleSheet(_btn_style)
         BtnDarker.clicked.connect(self.BrightnessDown)
 
         # Backlight toggle: compensates for subjects lit from behind (contraluz).
@@ -545,7 +475,7 @@ class MainWindow(QMainWindow):
         BtnBrighter = QPushButton('▲ Brighter', self)
         BtnBrighter.setGeometry(1750, 920, 110, 45)
         BtnBrighter.setToolTip('Increase brightness')
-        BtnBrighter.setStyleSheet(_exp_style)
+        BtnBrighter.setStyleSheet(_btn_style)
         BtnBrighter.clicked.connect(self.BrightnessUp)
 
         # ── Config / status buttons (bottom of right panel) ───────────────────
@@ -927,42 +857,24 @@ class MainWindow(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────────
     #  PRESET HANDLERS — Platform positions (Camera 1 only, presets 1-3)
     #
-    #  NOTE: Go1/Go2/Go3 always target Camera 1 regardless of the Camera
-    #  Selection panel.  These are physical platform positions (Chairman,
-    #  Left, Right) that are only meaningful for the platform-facing camera.
+    #  Go1/Go2/Go3 always target Camera 1 regardless of the Camera Selection
+    #  panel — these positions are only meaningful for the platform-facing camera.
     # ─────────────────────────────────────────────────────────────────────────
 
-    def Go1(self):
-        """Chairman preset (Camera 1 preset #1). Call or Set depending on mode."""
+    def _go_platform_preset(self, preset_num, title):
+        """Call or set a Camera 1 platform preset (Chairman, Left, Right)."""
+        hex_num = f"{preset_num:02x}"
         if self.Set1.isChecked():
-            # Call preset 1 → VISCA: 81 01 04 3F 02 01 FF
-            self._send_cmd(IPAddress, Cam1ID, "01043f0201ff")
+            self._send_cmd(IPAddress, Cam1ID, f"01043f02{hex_num}ff")
         elif self.Set2.isChecked():
-            reply = QMessageBox.question(self, 'Record Chairman Position', "Are You Sure?",
+            reply = QMessageBox.question(self, f'Record {title}', "Are You Sure?",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
-                # Set preset 1 → VISCA: 81 01 04 3F 01 01 FF
-                self._send_cmd(IPAddress, Cam1ID, "01043f0101ff")
+                self._send_cmd(IPAddress, Cam1ID, f"01043f01{hex_num}ff")
 
-    def Go2(self):
-        """Platform Left preset (Camera 1 preset #2). Call or Set depending on mode."""
-        if self.Set1.isChecked():
-            self._send_cmd(IPAddress, Cam1ID, "01043f0202ff")
-        elif self.Set2.isChecked():
-            reply = QMessageBox.question(self, 'Record Platform Left', "Are You Sure?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self._send_cmd(IPAddress, Cam1ID, "01043f0102ff")
-
-    def Go3(self):
-        """Platform Right preset (Camera 1 preset #3). Call or Set depending on mode."""
-        if self.Set1.isChecked():
-            self._send_cmd(IPAddress, Cam1ID, "01043f0203ff")
-        elif self.Set2.isChecked():
-            reply = QMessageBox.question(self, 'Record Platform Right', "Are You Sure?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self._send_cmd(IPAddress, Cam1ID, "01043f0103ff")
+    def Go1(self): self._go_platform_preset(1, 'Chairman Position')
+    def Go2(self): self._go_platform_preset(2, 'Platform Left')
+    def Go3(self): self._go_platform_preset(3, 'Platform Right')
 
     # ─────────────────────────────────────────────────────────────────────────
     #  PRESET HANDLER — Seat buttons (presets 4-128, respects camera selection)
@@ -1004,105 +916,56 @@ class MainWindow(QMainWindow):
     #  CONFIG DIALOGS — change IP address or VISCA ID at runtime
     # ─────────────────────────────────────────────────────────────────────────
 
-    def PTZ1Address(self):
-        """ Let the operator change Camera 1's IP address."""
-        result = QMessageBox.warning(
-            self, 'Platform PTZ Control',
-            'Do you want to change the IP address used to control the Platform camera?',
-            QMessageBox.Ok, QMessageBox.Cancel
-        )
-        if result == QMessageBox.Ok:
-            text, ok = QInputDialog.getText(
-                self, 'Platform PTZ Control',
-                f'New IP address for Platform Camera  (current: {IPAddress}):',
-                text=IPAddress
-            )
-            if ok and text:
-                if not _is_valid_ip(text):
-                    QMessageBox.warning(self, 'Invalid IP Address',
-                                        f'"{text}" is not a valid IPv4 address.\n'
-                                        'Please enter four numbers separated by dots '
-                                        '(e.g. 172.16.1.11).')
-                    return
-                with open("PTZ1IP.txt", "w") as f:
-                    f.write(text.strip())
-                # Restart the app to reload all config and re-check connectivity
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+    def _change_ip(self, cam_num):
+        """Generic dialog to change Camera 1 or 2 IP. Validates, saves, restarts."""
+        cam_name = 'Platform' if cam_num == 1 else 'Comments'
+        current  = IPAddress if cam_num == 1 else IPAddress2
+        filename = 'PTZ1IP.txt' if cam_num == 1 else 'PTZ2IP.txt'
+        title    = f'{cam_name} PTZ Control'
+        if QMessageBox.warning(self, title,
+                               f'Do you want to change the IP address used to control the {cam_name} camera?',
+                               QMessageBox.Ok, QMessageBox.Cancel) != QMessageBox.Ok:
+            return
+        text, ok = QInputDialog.getText(self, title,
+                                        f'New IP address for {cam_name} Camera  (current: {current}):',
+                                        text=current)
+        if ok and text:
+            if not _is_valid_ip(text):
+                QMessageBox.warning(self, 'Invalid IP Address',
+                                    f'"{text}" is not a valid IPv4 address.\n'
+                                    'Please enter four numbers separated by dots (e.g. 172.16.1.11).')
+                return
+            with open(filename, "w") as f:
+                f.write(text.strip())
+            os.execv(sys.executable, [sys.executable] + sys.argv)
 
-    def PTZ2Address(self):
-        """Let the operator change Camera 2's IP address."""
-        result = QMessageBox.warning(
-            self, 'Comments PTZ Control',
-            'Do you want to change the IP address used to control the Comments camera?',
-            QMessageBox.Ok, QMessageBox.Cancel
-        )
-        if result == QMessageBox.Ok:
-            text, ok = QInputDialog.getText(
-                self, 'Comments PTZ Control',
-                f'New IP address for Comments Camera  (current: {IPAddress2}):',
-                text=IPAddress2
-            )
-            if ok and text:
-                if not _is_valid_ip(text):
-                    QMessageBox.warning(self, 'Invalid IP Address',
-                                        f'"{text}" is not a valid IPv4 address.\n'
-                                        'Please enter four numbers separated by dots '
-                                        '(e.g. 172.16.1.12).')
-                    return
-                with open("PTZ2IP.txt", "w") as f:
-                    f.write(text.strip())
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+    def _change_cam_id(self, cam_num):
+        """Generic dialog to change Camera 1 or 2 VISCA ID. Validates hex, saves, restarts."""
+        cam_name = 'Platform' if cam_num == 1 else 'Comments'
+        current  = Cam1ID if cam_num == 1 else Cam2ID
+        filename = 'Cam1ID.txt' if cam_num == 1 else 'Cam2ID.txt'
+        title    = f'{cam_name} PTZ Control'
+        if QMessageBox.warning(self, title,
+                               f'Do you want to change the VISCA ID used to control the {cam_name} camera?',
+                               QMessageBox.Ok, QMessageBox.Cancel) != QMessageBox.Ok:
+            return
+        text, ok = QInputDialog.getText(self, title,
+                                        f'New VISCA ID for {cam_name} Camera  (current: {current}):',
+                                        text=current)
+        if ok and text:
+            if not _is_valid_cam_id(text):
+                QMessageBox.warning(self, 'Invalid Camera ID',
+                                    f'"{text}" is not a valid hexadecimal ID.\n'
+                                    'Please enter a hex value such as "81" or "82".')
+                return
+            with open(filename, "w") as f:
+                f.write(text.strip())
+            os.execv(sys.executable, [sys.executable] + sys.argv)
 
-    def PTZ1IDchange(self):
-        """ Let the operator change Camera 1's VISCA device ID.
-        FIX 4 — Previously any text was saved without checking whether it was
-        valid hex.  An invalid ID causes binascii.Error at next startup when
-        VISCA commands are assembled.  We now validate with _is_valid_cam_id()."""
-        result = QMessageBox.warning(
-            self, 'Platform PTZ Control',
-            'Do you want to change the VISCA ID used to control the Platform camera?',
-            QMessageBox.Ok, QMessageBox.Cancel
-        )
-        if result == QMessageBox.Ok:
-            text, ok = QInputDialog.getText(
-                self, 'Platform PTZ Control',
-                f'New VISCA ID for Platform Camera  (current: {Cam1ID}):',
-                text=Cam1ID
-            )
-            if ok and text:
-                if not _is_valid_cam_id(text):
-                    QMessageBox.warning(self, 'Invalid Camera ID',
-                                        f'"{text}" is not a valid hexadecimal ID.\n'
-                                        'Please enter a hex value such as "81" or "82".')
-                    return
-                with open("Cam1ID.txt", "w") as f:
-                    f.write(text.strip())
-                os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    def PTZ2IDchange(self):
-    
-        """Let the operator change Camera 2's VISCA device ID."""
-
-        result = QMessageBox.warning(
-            self, 'Comments PTZ Control',
-            'Do you want to change the VISCA ID used to control the Comments camera?',
-            QMessageBox.Ok, QMessageBox.Cancel
-        )
-        if result == QMessageBox.Ok:
-            text, ok = QInputDialog.getText(
-                self, 'Comments PTZ Control',
-                f'New VISCA ID for Comments Camera  (current: {Cam2ID}):',
-                text=Cam2ID
-            )
-            if ok and text:
-                if not _is_valid_cam_id(text):
-                    QMessageBox.warning(self, 'Invalid Camera ID',
-                                        f'"{text}" is not a valid hexadecimal ID.\n'
-                                        'Please enter a hex value such as "81" or "82".')
-                    return
-                with open("Cam2ID.txt", "w") as f:
-                    f.write(text.strip())
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+    def PTZ1Address(self):  self._change_ip(1)
+    def PTZ2Address(self):  self._change_ip(2)
+    def PTZ1IDchange(self): self._change_cam_id(1)
+    def PTZ2IDchange(self): self._change_cam_id(2)
 
     def Quit(self):
         """Close the application cleanly."""
