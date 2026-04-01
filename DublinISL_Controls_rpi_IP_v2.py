@@ -283,9 +283,9 @@ class MainWindow(QMainWindow):
         # regardless of which camera is selected in the panel on the right.
         # They recall (or record) fixed positions: Chairman, Platform-Left, Platform-Right.
         _platform_style = (
-            "background-color: rgba(0,0,0,0); font: 14px; font-weight: bold; "
-            "color: black; padding-top: 70px"
+            "background-color: rgba(0,0,0,0); border: none"
         )
+        _platform_label_style = "font: bold 13px; color: black; background: transparent"
         for label, x, handler in [
             ('Left',     460, self.Go2),
             ('Chairman', 623, self.Go1),
@@ -296,6 +296,11 @@ class MainWindow(QMainWindow):
             btn.move(x, 35)
             btn.setStyleSheet(_platform_style)
             btn.clicked.connect(handler)
+            # Text label displayed below the button image
+            lbl = QLabel(label, self)
+            lbl.setGeometry(x, 140, 110, 20)
+            lbl.setAlignment(QtCore.Qt.AlignCenter)
+            lbl.setStyleSheet(_platform_label_style)
 
         # ── Seat buttons (dynamic, one per entry in SEAT_POSITIONS) ──────────
         # Each button calls go_to_preset(n) with the seat's preset number.
